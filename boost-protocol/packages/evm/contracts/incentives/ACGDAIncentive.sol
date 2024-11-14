@@ -25,8 +25,8 @@ abstract contract ACGDAIncentive is AIncentive {
         uint256 currentReward;
     }
 
-    /// @notice The ERC20-like token used for the incentive
-    address public asset;
+    /// @notice A mapping of address to claim status
+    mapping(address => bool) public claimed;
 
     CGDAParameters public cgdaParams;
     uint256 public totalBudget;

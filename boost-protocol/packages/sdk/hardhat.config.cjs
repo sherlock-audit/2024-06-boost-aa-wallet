@@ -1,5 +1,5 @@
-require('@nomicfoundation/hardhat-toolbox-viem');
+require('dotenv').config();
 
 module.exports = {
-  solidity: '0.8.24',
+  networks: {},
 };

@@ -13,13 +13,13 @@ import {ERC20Incentive} from "contracts/incentives/ERC20Incentive.sol";
 import {AERC20Incentive} from "contracts/incentives/ERC20Incentive.sol";
 
 import {ABudget} from "contracts/budgets/ABudget.sol";
-import {SimpleBudget} from "contracts/budgets/SimpleBudget.sol";
+import {ManagedBudget} from "contracts/budgets/ManagedBudget.sol";
 
 contract ERC20IncentiveTest is Test {
     using SafeTransferLib for address;
 
     ERC20Incentive public incentive;
-    SimpleBudget public budget;
+    ManagedBudget public budget;
     MockERC20 public mockAsset = new MockERC20();
 
     function setUp() public {
@@ -169,7 +169,7 @@ contract ERC20IncentiveTest is Test {
 
         // Reclaim the full reward amount
         bytes memory reclaimPayload =
-            abi.encode(AIncentive.ClawbackPayload({target: address(this), data: abi.encode(100 ether)}));
+            abi.encode(AIncentive.ClawbackPayload({target: address(budget), data: abi.encode(100 ether)}));
         incentive.clawback(reclaimPayload);
 
         // Check that the limit is set to 0
@@ -328,10 +328,11 @@ contract ERC20IncentiveTest is Test {
         return ERC20Incentive(LibClone.clone(address(new ERC20Incentive())));
     }
 
-    function _newBudgetClone() internal returns (SimpleBudget newBudget) {
+    function _newBudgetClone() internal returns (ManagedBudget newBudget) {
         address[] memory authorized = new address[](0);
-        SimpleBudget.InitPayload memory initPayload = SimpleBudget.InitPayload(address(this), authorized);
-        newBudget = SimpleBudget(payable(LibClone.clone(address(new SimpleBudget()))));
+        uint256[] memory roles = new uint256[](0);
+        ManagedBudget.InitPayload memory initPayload = ManagedBudget.InitPayload(address(this), authorized, roles);
+        newBudget = ManagedBudget(payable(LibClone.clone(address(new ManagedBudget()))));
         newBudget.initialize(abi.encode(initPayload));
     }
 
@@ -341,10 +342,18 @@ contract ERC20IncentiveTest is Test {
 
     function _initPayload(address asset, AERC20Incentive.Strategy strategy, uint256 reward, uint256 limit)
         internal
-        pure
+        view
         returns (bytes memory)
     {
-        return abi.encode(ERC20Incentive.InitPayload({asset: asset, strategy: strategy, reward: reward, limit: limit}));
+        return abi.encode(
+            ERC20Incentive.InitPayload({
+                asset: asset,
+                strategy: strategy,
+                reward: reward,
+                limit: limit,
+                manager: address(this)
+            })
+        );
     }
 
     function _makeFungibleTransfer(ABudget.AssetType assetType, address asset, address target, uint256 value)

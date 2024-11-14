@@ -9,7 +9,7 @@ import {SafeTransferLib} from "@solady/utils/SafeTransferLib.sol";
 import {MockERC20, MockERC721} from "contracts/shared/Mocks.sol";
 
 import {BoostCore} from "contracts/BoostCore.sol";
-import {BoostRegistry} from "contracts/BoostRegistry.sol";
+import {BoostRegistry, ABoostRegistry} from "contracts/BoostRegistry.sol";
 
 import {BoostError} from "contracts/shared/BoostError.sol";
 import {BoostLib} from "contracts/shared/BoostLib.sol";
@@ -19,7 +19,7 @@ import {AAllowList} from "contracts/allowlists/AAllowList.sol";
 import {SimpleAllowList} from "contracts/allowlists/SimpleAllowList.sol";
 
 import {ABudget} from "contracts/budgets/ABudget.sol";
-import {SimpleBudget} from "contracts/budgets/SimpleBudget.sol";
+import {ManagedBudget} from "contracts/budgets/ManagedBudget.sol";
 
 import {AAction} from "contracts/actions/AAction.sol";
 import {AContractAction, ContractAction} from "contracts/actions/ContractAction.sol";
@@ -55,7 +55,6 @@ import {AValidator} from "contracts/validators/AValidator.sol";
  *         - Then 500 ERC20 should be debited from my budget
  *       - I can specify a list of allowed addresses
  *       - I can specify an additional protocol fee
- *       - I can specify an additional referral fee
  *       - I can specify a maximum number of participants
  *       - I can specify the owner of the Boost
  *       - Then the Boost should be live
@@ -72,34 +71,38 @@ contract EndToEndBasic is Test {
     MockERC20 public erc20 = new MockERC20();
     MockERC721 public erc721 = new MockERC721();
 
-    SimpleBudget public _budget;
+    ManagedBudget public _budget;
+
+    address badClaimer = makeAddr("bad claimer");
 
     function setUp() public {
         // Before we can fulfill our stories, we need to get some setup out of the way...
         erc20.mint(address(this), 1000 ether);
 
         // "I can specify the action of 'Mint an NFT'" => ERC721MintAction
-        registry.register(BoostRegistry.RegistryType.ACTION, "ERC721MintAction", address(new ERC721MintAction()));
+        registry.register(ABoostRegistry.RegistryType.ACTION, "ERC721MintAction", address(new ERC721MintAction()));
 
         // "I can specify the incentive of '100 ERC20' with a max of 5 participants" => ERC20Incentive
-        registry.register(BoostRegistry.RegistryType.INCENTIVE, "ERC20Incentive", address(new ERC20Incentive()));
+        registry.register(ABoostRegistry.RegistryType.INCENTIVE, "ERC20Incentive", address(new ERC20Incentive()));
 
         // "I can specify a list of allowed addresses" => SimpleAllowList
-        registry.register(BoostRegistry.RegistryType.ALLOW_LIST, "SimpleAllowList", address(new SimpleAllowList()));
+        registry.register(ABoostRegistry.RegistryType.ALLOW_LIST, "SimpleAllowList", address(new SimpleAllowList()));
 
-        // "I can create a budget" => SimpleBudget
-        registry.register(BoostRegistry.RegistryType.BUDGET, "SimpleBudget", address(new SimpleBudget()));
+        // "I can create a budget" => ManagedBudget
+        registry.register(ABoostRegistry.RegistryType.BUDGET, "ManagedBudget", address(new ManagedBudget()));
         _budget = _given_that_I_have_a_budget();
     }
 
     /// @notice As a creator, I want to incentivize users to engage with my content so that I can grow my audience.
     function test__As_a_creator() public {
         // "Given that I have a budget"
-        SimpleBudget budget = _budget;
+        ManagedBudget budget = _budget;
         _when_I_allocate_assets_to_my_budget(budget);
 
         // "When I create a boost with my budget"
         BoostLib.Boost memory boost = _when_I_create_a_new_boost_with_my_budget(budget);
+        uint256 boostId = 0; // This is the only Boost we've created = 0
+        uint256 incentiveId = 0; // This is the only AIncentive in that Boost = 0
 
         // "Then 500 ERC20 should be debited from my budget"
         assertEq(erc20.balanceOf(address(budget)), 0);
@@ -108,9 +111,9 @@ contract EndToEndBasic is Test {
         assertEq(boost.owner, address(1));
 
         // Let's spot check the Boost we just created
-        // - ABudget == SimpleBudget
+        // - ABudget == ManagedBudget
         assertEq(address(boost.budget), address(budget));
-        assertEq(SimpleBudget(payable(address(boost.budget))).owner(), address(this));
+        assertEq(ManagedBudget(payable(address(boost.budget))).owner(), address(this));
         assertTrue(budget.isAuthorized(address(this)));
         assertFalse(budget.isAuthorized(address(0xdeadbeef)));
 
@@ -137,11 +140,18 @@ contract EndToEndBasic is Test {
         // - Protocol Fee == 1,000 bps (custom fee) + 1,000 bps (base fee) = 2,000 bps = 20%
         assertEq(boost.protocolFee, 2_000);
 
-        // - Referral Fee == 500 bps (custom fee) + 1,000 bps (base fee) = 1,500 bps = 15%
-        assertEq(boost.referralFee, 1_500);
-
         // - Max Participants == 5
         assertEq(boost.maxParticipants, 5);
+
+        // - ClawbackFromTarget
+        // reverts on underflow
+        vm.expectRevert();
+        budget.clawbackFromTarget(address(core), abi.encode(500 ether + 1), boostId, incentiveId);
+
+        // can clawback funds from incentive
+        budget.clawbackFromTarget(address(core), abi.encode(500 ether), boostId, incentiveId);
+        // Should recover the full budget including the protocol fee
+        assertEq(erc20.balanceOf(address(budget)), 600 ether);
     }
 
     /// @notice As a user, I want to complete a Boost so that I can earn the rewards.
@@ -161,34 +171,53 @@ contract EndToEndBasic is Test {
         uint256 boostId = 0; // This is the only Boost we've created = 0
         uint256 incentiveId = 0; // This is the only AIncentive in that Boost = 0
         uint256 tokenId = 1; // This is the tokenId we just minted = 1
-        core.claimIncentive{value: core.claimFee()}(
-            boostId, incentiveId, address(0), abi.encode(address(this), abi.encode(tokenId))
-        );
+
+        // "non-allowlisted users cannot claim this boost"
+        tokenId = 2;
+        startHoax(badClaimer);
+        // user mints nft with valid mintFee
+        (success,) = ERC721MintAction(address(boost.action)).target().call{value: mintFee}(mintPayload);
+        assertTrue(success);
+
+        vm.record();
+
+        startHoax(badClaimer);
+        vm.expectRevert(BoostError.Unauthorized.selector);
+        core.claimIncentive(boostId, incentiveId, address(0), abi.encode(address(this), abi.encode(tokenId)));
+
+        (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(address(boost.validator));
+        assertEq(reads.length, 0);
+        assertEq(writes.length, 0);
     }
 
     //////////////////
     // Test Helpers //
     //////////////////
 
-    function _given_that_I_have_a_budget() internal returns (SimpleBudget budget) {
+    function _given_that_I_have_a_budget() internal returns (ManagedBudget budget) {
         // 1. Let's find the budget implementation we want to use (this should be handled by the UI)
-        //   - In this case, we're using the registered SimpleBudget implementation
+        //   - In this case, we're using the registered ManagedBudget implementation
         //   - Budgets require an owner and a list of initially authorized addresses
         address[] memory authorized = new address[](1);
         authorized[0] = address(core);
 
-        budget = SimpleBudget(
+        uint256[] memory roles = new uint256[](1);
+        roles[0] = 1 << 0;
+
+        budget = ManagedBudget(
             payable(
                 address(
                     registry.deployClone(
-                        BoostRegistry.RegistryType.BUDGET,
+                        ABoostRegistry.RegistryType.BUDGET,
                         address(
                             registry.getBaseImplementation(
-                                registry.getIdentifier(BoostRegistry.RegistryType.BUDGET, "SimpleBudget")
+                                registry.getIdentifier(ABoostRegistry.RegistryType.BUDGET, "ManagedBudget")
                             )
                         ),
-                        "My Simple ABudget",
-                        abi.encode(SimpleBudget.InitPayload({owner: address(this), authorized: authorized}))
+                        "My Managed ABudget",
+                        abi.encode(
+                            ManagedBudget.InitPayload({owner: address(this), authorized: authorized, roles: roles})
+                        )
                     )
                 )
             )
@@ -200,7 +229,7 @@ contract EndToEndBasic is Test {
     function _when_I_allocate_assets_to_my_budget(ABudget budget) internal {
         // "When I allocate assets to my budget"
         // "And the asset is an ERC20 token"
-        erc20.approve(address(budget), 500 ether);
+        erc20.approve(address(budget), 600 ether);
         assertTrue(
             budget.allocate(
                 abi.encode(
@@ -208,15 +237,15 @@ contract EndToEndBasic is Test {
                         assetType: ABudget.AssetType.ERC20,
                         asset: address(erc20),
                         target: address(this),
-                        data: abi.encode(ABudget.FungiblePayload({amount: 500 ether}))
+                        data: abi.encode(ABudget.FungiblePayload({amount: 600 ether}))
                     })
                 )
             )
         );
 
         // "Then my budget's balance should reflect the transferred amount"
-        assertEq(erc20.balanceOf(address(budget)), 500 ether);
-        assertEq(budget.available(address(erc20)), 500 ether);
+        assertEq(erc20.balanceOf(address(budget)), 600 ether);
+        assertEq(budget.available(address(erc20)), 600 ether);
 
         // "When I allocate assets to my budget"
         // "And the asset is ETH"
@@ -238,9 +267,16 @@ contract EndToEndBasic is Test {
         assertEq(budget.available(address(0)), 10.5 ether);
     }
 
-    function _given_that_I_am_eligible_for_a_boost() internal returns (BoostLib.Boost memory) {
+    function _given_that_I_am_eligible_for_a_boost() internal returns (BoostLib.Boost memory boost) {
         _when_I_allocate_assets_to_my_budget(_budget);
-        return _when_I_create_a_new_boost_with_my_budget(_budget);
+        boost = _when_I_create_a_new_boost_with_my_budget(_budget);
+
+        // set my eligibility
+        address[] memory allowedUsers = new address[](1);
+        allowedUsers[0] = address(this);
+        bool[] memory allowedStatus = new bool[](1);
+        allowedStatus[0] = true;
+        SimpleAllowList(address(boost.allowList)).setAllowed(allowedUsers, allowedStatus);
     }
 
     /// @notice When I create a new Boost with my budget
@@ -263,11 +299,11 @@ contract EndToEndBasic is Test {
             isBase: true,
             instance: address(
                 registry.getBaseImplementation(
-                    registry.getIdentifier(BoostRegistry.RegistryType.INCENTIVE, "ERC20Incentive")
+                    registry.getIdentifier(ABoostRegistry.RegistryType.INCENTIVE, "ERC20Incentive")
                 )
             ),
             // "... of '100 ERC20' with a max of 5 participants"
-            parameters: abi.encode(erc20, AERC20Incentive.Strategy.POOL, 100 ether, 5)
+            parameters: abi.encode(erc20, AERC20Incentive.Strategy.POOL, 100 ether, 5, address(budget))
         });
 
         return core.createBoost(
@@ -284,7 +320,7 @@ contract EndToEndBasic is Test {
                             isBase: true,
                             instance: address(
                                 registry.getBaseImplementation(
-                                    registry.getIdentifier(BoostRegistry.RegistryType.ACTION, "ERC721MintAction")
+                                    registry.getIdentifier(ABoostRegistry.RegistryType.ACTION, "ERC721MintAction")
                                 )
                             ),
                             parameters: abi.encode(
@@ -307,14 +343,13 @@ contract EndToEndBasic is Test {
                             isBase: true,
                             instance: address(
                                 registry.getBaseImplementation(
-                                    registry.getIdentifier(BoostRegistry.RegistryType.ALLOW_LIST, "SimpleAllowList")
+                                    registry.getIdentifier(ABoostRegistry.RegistryType.ALLOW_LIST, "SimpleAllowList")
                                 )
                             ),
                             parameters: abi.encode(address(this), allowList)
                         }),
                         incentives, // "I can specify the incentive..."
                         1_000, // "I can specify an additional protocol fee" => 1,000 bps == 10%
-                        500, // "I can specify an additional referral fee" => 500 bps == 5%
                         5, // "I can specify a maximum number of participants" => 5
                         address(1) // "I can specify the owner of the Boost" => address(1)
                     )

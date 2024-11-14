@@ -12,25 +12,62 @@ import {
   writePointsIncentiveClaim,
 } from '@boostxyz/evm';
 import { bytecode } from '@boostxyz/evm/artifacts/contracts/incentives/PointsIncentive.sol/PointsIncentive.json';
-import type { Address, ContractEventName, Hex } from 'viem';
+import {
+  type Address,
+  type ContractEventName,
+  type Hex,
+  encodeAbiParameters,
+  zeroHash,
+} from 'viem';
+import { PointsIncentive as PointsIncentiveBases } from '../../dist/deployments.json';
 import type {
   DeployableOptions,
   GenericDeployableParams,
 } from '../Deployable/Deployable';
 import { DeployableTarget } from '../Deployable/DeployableTarget';
+import { type ClaimPayload, prepareClaimPayload } from '../claiming';
 import {
-  type ClaimPayload,
   type GenericLog,
-  type PointsIncentivePayload,
   type ReadParams,
   RegistryType,
   type WriteParams,
-  prepareClaimPayload,
-  preparePointsIncentivePayload,
 } from '../utils';
 
 export { pointsIncentiveAbi };
-export type { PointsIncentivePayload };
+
+/**
+ * The object representation of a `PointsIncentive.InitPayload`
+ *
+ * @export
+ * @interface PointsIncentivePayload
+ * @typedef {PointsIncentivePayload}
+ */
+export interface PointsIncentivePayload {
+  /**
+   * The address of the points contract
+   *
+   * @type {Address}
+   */
+  venue: Address;
+  /**
+   * The selector for the issuance function on the points contract
+   *
+   * @type {Hex}
+   */
+  selector: Hex;
+  /**
+   * The reward amount issued for each claim
+   *
+   * @type {bigint}
+   */
+  reward: bigint;
+  /**
+   *  The maximum number of claims that can be made (one per address)
+   *
+   * @type {bigint}
+   */
+  limit: bigint;
+}
 
 /**
  * A generic `viem.Log` event with support for `PointsIncentive` event types.
@@ -70,10 +107,12 @@ export class PointsIncentive extends DeployableTarget<
    *
    * @public
    * @static
-   * @type {Address}
+   * @type {Record<number, Address>}
    */
-  public static override base: Address = import.meta.env
-    .VITE_POINTS_INCENTIVE_BASE;
+  public static override bases: Record<number, Address> = {
+    31337: import.meta.env.VITE_POINTS_INCENTIVE_BASE,
+    ...(PointsIncentiveBases as Record<number, Address>),
+  };
   /**
    * @inheritdoc
    *
@@ -88,13 +127,13 @@ export class PointsIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20IncentiveAbi, 'claims'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async claims(
     params?: ReadParams<typeof pointsIncentiveAbi, 'claims'>,
   ) {
-    return readPointsIncentiveClaims(this._config, {
+    return await readPointsIncentiveClaims(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -107,13 +146,13 @@ export class PointsIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20IncentiveAbi, 'currentReward'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>} - The current reward
    */
   public async currentReward(
     params?: ReadParams<typeof pointsIncentiveAbi, 'currentReward'>,
   ) {
-    return readPointsIncentiveCurrentReward(this._config, {
+    return await readPointsIncentiveCurrentReward(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -126,13 +165,13 @@ export class PointsIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof pointsIncentiveAbi, 'reward'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<bigint>} The reward amount issued for each claim
    */
   public async reward(
     params?: ReadParams<typeof pointsIncentiveAbi, 'reward'>,
   ) {
-    return readPointsIncentiveReward(this._config, {
+    return await readPointsIncentiveReward(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -146,14 +185,14 @@ export class PointsIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {Address} address
-   * @param {?ReadParams<typeof pointsIncentiveAbi, 'claimed'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<boolean>}
    */
   public async claimed(
     address: Address,
     params?: ReadParams<typeof pointsIncentiveAbi, 'claimed'>,
   ) {
-    return readPointsIncentiveClaimed(this._config, {
+    return await readPointsIncentiveClaimed(this._config, {
       address: this.assertValidAddress(),
       args: [address],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -166,11 +205,11 @@ export class PointsIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof pointsIncentiveAbi, 'venue'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>}
    */
   public async venue(params?: ReadParams<typeof pointsIncentiveAbi, 'venue'>) {
-    return readPointsIncentiveVenue(this._config, {
+    return await readPointsIncentiveVenue(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -182,11 +221,11 @@ export class PointsIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof pointsIncentiveAbi, 'limit'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async limit(params?: ReadParams<typeof pointsIncentiveAbi, 'limit'>) {
-    return readPointsIncentiveLimit(this._config, {
+    return await readPointsIncentiveLimit(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -198,13 +237,13 @@ export class PointsIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof pointsIncentiveAbi, 'selector'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<Hex>}
    */
   public async selector(
     params?: ReadParams<typeof pointsIncentiveAbi, 'selector'>,
   ) {
-    return readPointsIncentiveSelector(this._config, {
+    return await readPointsIncentiveSelector(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -217,14 +256,14 @@ export class PointsIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof pointsIncentiveAbi, 'claim'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} -  True if the incentive was successfully claimed
    */
-  public async claim(
+  protected async claim(
     payload: ClaimPayload,
     params?: WriteParams<typeof pointsIncentiveAbi, 'claim'>,
   ) {
-    return this.awaitResult(this.claimRaw(payload, params));
+    return await this.awaitResult(this.claimRaw(payload, params));
   }
 
   /**
@@ -233,10 +272,10 @@ export class PointsIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof pointsIncentiveAbi, 'claim'>} [params]
-   * @returns {Promise<boolean>} -  True if the incentive was successfully claimed
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} -  True if the incentive was successfully claimed
    */
-  public async claimRaw(
+  protected async claimRaw(
     payload: ClaimPayload,
     params?: WriteParams<typeof pointsIncentiveAbi, 'claim'>,
   ) {
@@ -262,14 +301,14 @@ export class PointsIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?ReadParams<typeof pointsIncentiveAbi, 'isClaimable'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<boolean>} -  True if the incentive is claimable based on the data payload
    */
   public async isClaimable(
     payload: ClaimPayload,
     params?: ReadParams<typeof pointsIncentiveAbi, 'isClaimable'>,
   ) {
-    return readPointsIncentiveIsClaimable(this._config, {
+    return await readPointsIncentiveIsClaimable(this._config, {
       address: this.assertValidAddress(),
       args: [prepareClaimPayload(payload)],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -300,4 +339,42 @@ export class PointsIncentive extends DeployableTarget<
       ...this.optionallyAttachAccount(options.account),
     };
   }
+
+  /**
+   * Builds the claim data for the PointsIncentive.
+   *
+   * @public
+   * @returns {Hash} A `zeroHash`, as PointsIncentive doesn't require specific claim data.
+   * @description This function returns `zeroHash` because PointsIncentive doesn't use any specific claim data.
+   */
+  public buildClaimData() {
+    return zeroHash;
+  }
 }
+
+/**
+ * Given a {@link PointsIncentivePayload}, properly encode a `PointsIncentive.InitPayload` for use with {@link PointsIncentive} initialization.
+ *
+ * @param {PointsIncentivePayload} param0
+ * @param {Address} param0.venue - The address of the points contract
+ * @param {Hex} param0.selector - The selector for the issuance function on the points contract
+ * @param {bigint} param0.reward - The reward amount issued for each claim
+ * @param {bigint} param0.limit -  The maximum number of claims that can be made (one per address)
+ * @returns {*}
+ */
+export const preparePointsIncentivePayload = ({
+  venue,
+  selector,
+  reward,
+  limit,
+}: PointsIncentivePayload) => {
+  return encodeAbiParameters(
+    [
+      { type: 'address', name: 'venue' },
+      { type: 'bytes4', name: 'selector' },
+      { type: 'uint256', name: 'reward' },
+      { type: 'uint256', name: 'limit' },
+    ],
+    [venue, selector, reward, limit],
+  );
+};

@@ -1,6 +1,6 @@
 import {
   type aCloneableAbi,
-  readACloneableGetComponentInterface as readACloneableGetComponentInterface,
+  readACloneableGetComponentInterface,
   readACloneableSupportsInterface,
 } from '@boostxyz/evm';
 import { deployContract } from '@wagmi/core';
@@ -10,6 +10,8 @@ import {
   type Hash,
   type Hex,
   type WaitForTransactionReceiptParameters,
+  isAddress,
+  isAddressEqual,
   zeroAddress,
 } from 'viem';
 import {
@@ -37,13 +39,13 @@ export class DeployableTarget<
   ContractAbi extends Abi,
 > extends Deployable<Payload, ContractAbi> {
   /**
-   * A static property representing the address of the base implementation on chain, used when cloning base contracts.
+   * A static property representing a map of stringified chain ID's to the address of the base implementation on chain, used when cloning base contracts.
    *
    * @static
    * @readonly
-   * @type {Address}
+   * @type {Record<string, Address>}
    */
-  static readonly base: Address = zeroAddress;
+  static readonly bases: Record<number, Address> = {};
   /**
    * The target's registry type.
    *
@@ -58,7 +60,18 @@ export class DeployableTarget<
    * @readonly
    * @type {boolean}
    */
-  readonly isBase: boolean = true;
+  readonly _isBase: boolean = true;
+  public get isBase() {
+    if (
+      !!this.address &&
+      Object.values(this.bases).some((base) =>
+        // biome-ignore lint/style/noNonNullAssertion: won't evaluate this if address checked and defined above
+        isAddressEqual(this.address!, base),
+      )
+    )
+      return true;
+    return this._isBase;
+  }
 
   /**
    * Creates an instance of DeployableTarget.
@@ -70,22 +83,33 @@ export class DeployableTarget<
    */
   constructor(
     options: DeployableOptions,
-    payload: DeployablePayloadOrAddress<Payload>,
+    payload?: DeployablePayloadOrAddress<Payload>,
     isBase?: boolean,
   ) {
     super(options, payload);
-    if (isBase !== undefined) this.isBase = isBase;
+    // if supplying a custom address, safe enough to assume it is not a base address which makes reusing contracts like budgets easier
+    if (
+      typeof payload === 'string' &&
+      isAddress(payload) &&
+      payload !== zeroAddress &&
+      !Object.values(this.bases).some((base) => {
+        if (!payload || !base) return false;
+        return isAddressEqual(payload, base);
+      })
+    )
+      isBase = false;
+    if (isBase !== undefined) this._isBase = isBase;
   }
 
   /**
-   * A getter that will return the base implementation's static address
+   * A getter that will return the base implementation's static addresses by numerical chain ID
    *
    * @public
    * @readonly
-   * @type {Address}
+   * @type {Record<number, Address>}
    */
-  public get base(): Address {
-    return (this.constructor as typeof DeployableTarget).base;
+  public get bases(): Record<number, Address> {
+    return (this.constructor as typeof DeployableTarget).bases;
   }
 
   /**
@@ -107,9 +131,9 @@ export class DeployableTarget<
    * @param {?Payload} [payload]
    * @param {?DeployableOptions} [options]
    * @param {?Omit<WaitForTransactionReceiptParameters, 'hash'>} [waitParams]
-   * @returns {unknown}
+   * @returns {Promise<this>}
    */
-  public override async deploy(
+  protected override async deploy(
     payload?: Payload,
     options?: DeployableOptions,
     waitParams?: Omit<WaitForTransactionReceiptParameters, 'hash'>,
@@ -128,7 +152,7 @@ export class DeployableTarget<
    * @param {?DeployableOptions} [_options]
    * @returns {Promise<Hash>}
    */
-  public override async deployRaw(
+  protected override async deployRaw(
     _payload?: Payload,
     _options?: DeployableOptions,
   ): Promise<Hash> {
@@ -150,14 +174,14 @@ export class DeployableTarget<
    * @public
    * @async
    * @param {Hex} interfaceId - The interface identifier
-   * @param {?ReadParams<typeof contractActionAbi, 'supportsInterface'>} [params]
-   * @returns {unknown} - True if the contract supports the interface
+   * @param {?ReadParams} [params]
+   * @returns {Promise<boolean>} - True if the contract supports the interface
    */
   public async supportsInterface(
     interfaceId: Hex,
     params?: ReadParams<typeof aCloneableAbi, 'supportsInterface'>,
   ) {
-    return readACloneableSupportsInterface(this._config, {
+    return await readACloneableSupportsInterface(this._config, {
       address: this.assertValidAddress(),
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -172,13 +196,13 @@ export class DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof contractActionAbi, 'getComponentInterface'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Hex>}
    */
   public async getComponentInterface(
     params?: ReadParams<typeof aCloneableAbi, 'getComponentInterface'>,
   ) {
-    return readACloneableGetComponentInterface(this._config, {
+    return await readACloneableGetComponentInterface(this._config, {
       address: this.assertValidAddress(),
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally

@@ -1,4 +1,13 @@
 import { aIncentiveAbi } from '@boostxyz/evm';
+import {
+  AAllowListIncentive,
+  ACGDAIncentive,
+  AERC20Incentive,
+  AERC20VariableCriteriaIncentive,
+  AERC20VariableIncentive,
+  // AERC20VariableCriteriaIncentive
+  APointsIncentive,
+} from '@boostxyz/evm/deploys/componentInterfaces.json';
 import { readContract } from '@wagmi/core';
 import type { Address, Hex } from 'viem';
 import type { DeployableOptions } from '../Deployable/Deployable';
@@ -6,17 +15,19 @@ import { InvalidComponentInterfaceError } from '../errors';
 import { AllowListIncentive } from './AllowListIncentive';
 import { CGDAIncentive } from './CGDAIncentive';
 import { ERC20Incentive } from './ERC20Incentive';
+import { ERC20VariableCriteriaIncentive } from './ERC20VariableCriteriaIncentive';
 import { ERC20VariableIncentive } from './ERC20VariableIncentive';
-import { ERC1155Incentive } from './ERC1155Incentive';
+// import { ERC1155Incentive } from './ERC1155Incentive';
 import { PointsIncentive } from './PointsIncentive';
 
 export {
   AllowListIncentive,
   CGDAIncentive,
-  ERC1155Incentive,
+  // ERC1155Incentive,
   ERC20Incentive,
   PointsIncentive,
   ERC20VariableIncentive,
+  ERC20VariableCriteriaIncentive,
 };
 
 /**
@@ -29,22 +40,24 @@ export type Incentive =
   | AllowListIncentive
   | CGDAIncentive
   | ERC20Incentive
-  | ERC1155Incentive
+  // | ERC1155Incentive
   | PointsIncentive
-  | ERC20VariableIncentive;
+  | ERC20VariableIncentive
+  | ERC20VariableCriteriaIncentive;
 
 /**
  * A map of Incentive component interfaces to their constructors.
  *
- * @type {{ "0x1e2e16a8": typeof PointsIncentive; "0x197d2cb3": typeof ERC20Incentive; "0xd1da3349": typeof AllowListIncentive; "0xb168aa66": typeof ERC1155Incentive; "0x31116297": typeof CGDAIncentive; }}
+ * @type {{ "0xc5b24b8e": typeof PointsIncentive; "0x8c901437": typeof ERC20Incentive; "0x4414fbb4": typeof AllowListIncentive; "0xa39e44d9": typeof CGDAIncentive; "0xa8e4af1e": typeof ERC20VariableIncentive; "0x90318111": typeof ERC20VariableCriteriaIncentive }}
  */
 export const IncentiveByComponentInterface = {
-  ['0x1e2e16a8']: PointsIncentive,
-  ['0x197d2cb3']: ERC20Incentive,
-  ['0xd1da3349']: AllowListIncentive,
-  ['0xb168aa66']: ERC1155Incentive,
-  ['0x31116297']: CGDAIncentive,
-  ['0x47319704']: ERC20VariableIncentive,
+  [APointsIncentive as Hex]: PointsIncentive,
+  [AERC20Incentive as Hex]: ERC20Incentive,
+  [AAllowListIncentive]: AllowListIncentive,
+  // [AERC1155Incentive as Hex]: ERC1155Incentive,
+  [ACGDAIncentive as Hex]: CGDAIncentive,
+  [AERC20VariableIncentive as Hex]: ERC20VariableIncentive,
+  [AERC20VariableCriteriaIncentive as Hex]: ERC20VariableCriteriaIncentive,
 };
 
 /**
@@ -54,7 +67,7 @@ export const IncentiveByComponentInterface = {
  * @async
  * @param {DeployableOptions} options
  * @param {Address} address
- * @returns {unknown}
+ * @returns {Incentive}
  * @throws {@link InvalidComponentInterfaceError}
  */
 export async function incentiveFromAddress(
@@ -70,7 +83,7 @@ export async function incentiveFromAddress(
   if (!Ctor) {
     throw new InvalidComponentInterfaceError(
       Object.keys(IncentiveByComponentInterface) as Hex[],
-      interfaceId,
+      interfaceId as Hex,
     );
   }
   return new Ctor(options, address);

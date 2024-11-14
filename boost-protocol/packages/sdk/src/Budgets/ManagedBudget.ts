@@ -2,26 +2,16 @@ import {
   managedBudgetAbi,
   readManagedBudgetAvailable,
   readManagedBudgetDistributed,
-  readManagedBudgetHasAllRoles,
-  readManagedBudgetHasAnyRole,
-  readManagedBudgetIsAuthorized,
   readManagedBudgetOwner,
-  readManagedBudgetRolesOf,
   readManagedBudgetTotal,
   simulateManagedBudgetAllocate,
   simulateManagedBudgetClawback,
   simulateManagedBudgetDisburse,
   simulateManagedBudgetDisburseBatch,
-  simulateManagedBudgetGrantRoles,
-  simulateManagedBudgetRevokeRoles,
-  simulateManagedBudgetSetAuthorized,
   writeManagedBudgetAllocate,
   writeManagedBudgetClawback,
   writeManagedBudgetDisburse,
   writeManagedBudgetDisburseBatch,
-  writeManagedBudgetGrantRoles,
-  writeManagedBudgetRevokeRoles,
-  writeManagedBudgetSetAuthorized,
 } from '@boostxyz/evm';
 import { bytecode } from '@boostxyz/evm/artifacts/contracts/budgets/ManagedBudget.sol/ManagedBudget.json';
 import { getAccount } from '@wagmi/core';
@@ -29,13 +19,19 @@ import {
   type Address,
   type ContractEventName,
   type Hex,
+  encodeAbiParameters,
+  parseAbiParameters,
   zeroAddress,
 } from 'viem';
+import { ManagedBudget as ManagedBudgetBases } from '../../dist/deployments.json';
 import type {
   DeployableOptions,
   GenericDeployableParams,
 } from '../Deployable/Deployable';
-import { DeployableTarget } from '../Deployable/DeployableTarget';
+import {
+  DeployableTargetWithRBAC,
+  type Roles,
+} from '../Deployable/DeployableTargetWithRBAC';
 import {
   DeployableUnknownOwnerProvidedError,
   UnknownTransferPayloadSupplied,
@@ -43,34 +39,62 @@ import {
 import {
   type ERC1155TransferPayload,
   type FungibleTransferPayload,
+  prepareERC1155Transfer,
+  prepareFungibleTransfer,
+} from '../transfers';
+import {
   type GenericLog,
-  type ManagedBudgetPayload,
   type ReadParams,
   RegistryType,
   type WriteParams,
-  prepareERC1155Transfer,
-  prepareFungibleTransfer,
-  prepareManagedBudgetPayload,
 } from '../utils';
-
 export { managedBudgetAbi };
-export type {
-  ERC1155TransferPayload,
-  FungibleTransferPayload,
-  ManagedBudgetPayload,
-};
+export type { ERC1155TransferPayload, FungibleTransferPayload };
 
 /**
- * Enum representing available roles for use in the `ManagedBudget`.
+ * The object representation of a `ManagedBudgetPayload.InitPayload`
+ *
+ * @export
+ * @interface ManagedBudgetPayload
+ * @typedef {ManagedBudgetPayload}
+ */
+export interface ManagedBudgetPayload {
+  /**
+   * The budget's owner
+   *
+   * @type {Address}
+   */
+  owner: Address;
+  /**
+   * List of accounts authorized to use the budget. This list should include a Boost core address to interact with the protocol.
+   *
+   * @type {Address[]}
+   */
+  authorized: Address[];
+  /**
+   * List of roles to assign to the corresponding account by index.
+   *
+   * @type {Roles[]}
+   */
+  roles: Roles[];
+}
+
+/**
+ *  Enum representing available roles for use in the `ManagedBudget`.
  * `MANAGER` can disburse funds.
  * `ADMIN` can additionally manage authorized users on the budget.
  *
+ * @deprecated use {@link Roles} instead
+ * @export
  * @type {{ readonly MANAGER: 1n; readonly ADMIN_ROLE: 2n; }}
+ * @enum {bigint}
  */
-export const ManagedBudgetRoles = {
-  MANAGER: 1n,
-  ADMIN: 2n,
-} as const;
+export enum ManagedBudgetRoles {
+  //@ts-expect-error ts doesn't like bigint enum values
+  MANAGER = 1n,
+  //@ts-expect-error ts doesn't like bigint enum values
+  ADMIN = 2n,
+}
 
 /**
  * A generic `viem.Log` event with support for `ManagedBudget` event types.
@@ -118,7 +142,7 @@ export function isERC1155TransferPayload(
  *
  * @export
  * @param {(FungibleTransferPayload | ERC1155TransferPayload)} transfer
- * @returns {*}
+ * @returns {Hex}
  * @throws {@link UnknownTransferPayloadSupplied}
  */
 export function prepareTransfer(
@@ -126,9 +150,11 @@ export function prepareTransfer(
 ) {
   if (isFungibleTransfer(transfer)) {
     return prepareFungibleTransfer(transfer);
-  } else if (isERC1155TransferPayload(transfer)) {
+  }
+  if (isERC1155TransferPayload(transfer)) {
     return prepareERC1155Transfer(transfer);
-  } else throw new UnknownTransferPayloadSupplied(transfer);
+  }
+  throw new UnknownTransferPayloadSupplied(transfer);
 }
 
 /**
@@ -138,9 +164,9 @@ export function prepareTransfer(
  * @export
  * @class ManagedBudget
  * @typedef {ManagedBudget}
- * @extends {DeployableTarget<ManagedBudgetPayload>}
+ * @extends {DeployableTargetWithRBAC<ManagedBudgetPayload>}
  */
-export class ManagedBudget extends DeployableTarget<
+export class ManagedBudget extends DeployableTargetWithRBAC<
   ManagedBudgetPayload,
   typeof managedBudgetAbi
 > {
@@ -157,10 +183,12 @@ export class ManagedBudget extends DeployableTarget<
    *
    * @public
    * @static
-   * @type {Address}
+   * @type {Record<number, Address>}
    */
-  public static override base: Address = import.meta.env
-    .VITE_MANAGED_BUDGET_BASE;
+  public static override bases: Record<number, Address> = {
+    31337: import.meta.env.VITE_MANAGED_BUDGET_BASE,
+    ...(ManagedBudgetBases as Record<number, Address>),
+  };
   /**
    * @inheritdoc
    *
@@ -178,14 +206,14 @@ export class ManagedBudget extends DeployableTarget<
    * @public
    * @async
    * @param {(FungibleTransferPayload | ERC1155TransferPayload)} transfer
-   * @param {?WriteParams<typeof managedBudgetAbi, 'allocate'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} - True if the allocation was successful
    */
   public async allocate(
     transfer: FungibleTransferPayload | ERC1155TransferPayload,
     params?: WriteParams<typeof managedBudgetAbi, 'allocate'>,
   ) {
-    return this.awaitResult(this.allocateRaw(transfer, params));
+    return await this.awaitResult(this.allocateRaw(transfer, params));
   }
 
   /**
@@ -196,8 +224,8 @@ export class ManagedBudget extends DeployableTarget<
    * @public
    * @async
    * @param {(FungibleTransferPayload | ERC1155TransferPayload)} transfer
-   * @param {?WriteParams<typeof managedBudgetAbi, 'allocate'>} [params]
-   * @returns {Promise<boolean>} - True if the allocation was successful
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} - True if the allocation was successful
    */
   public async allocateRaw(
     transfer: FungibleTransferPayload | ERC1155TransferPayload,
@@ -226,14 +254,14 @@ export class ManagedBudget extends DeployableTarget<
    * @public
    * @async
    * @param {(FungibleTransferPayload | ERC1155TransferPayload)} transfer
-   * @param {?WriteParams<typeof managedBudgetAbi, 'clawback'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} - True if the request was successful
    */
   public async clawback(
     transfer: FungibleTransferPayload | ERC1155TransferPayload,
     params?: WriteParams<typeof managedBudgetAbi, 'clawback'>,
   ) {
-    return this.awaitResult(this.clawbackRaw(transfer, params));
+    return await this.awaitResult(this.clawbackRaw(transfer, params));
   }
 
   /**
@@ -245,8 +273,8 @@ export class ManagedBudget extends DeployableTarget<
    * @public
    * @async
    * @param {(FungibleTransferPayload | ERC1155TransferPayload)} transfer
-   * @param {?WriteParams<typeof managedBudgetAbi, 'clawback'>} [params]
-   * @returns {Promise<boolean>} - True if the request was successful
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} - True if the request was successful
    */
   public async clawbackRaw(
     transfer: FungibleTransferPayload | ERC1155TransferPayload,
@@ -273,14 +301,14 @@ export class ManagedBudget extends DeployableTarget<
    * @public
    * @async
    * @param {(FungibleTransferPayload | ERC1155TransferPayload)} transfer
-   * @param {?WriteParams<typeof managedBudgetAbi, 'disburse'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} - True if the disbursement was successful
    */
   public async disburse(
     transfer: FungibleTransferPayload | ERC1155TransferPayload,
     params?: WriteParams<typeof managedBudgetAbi, 'disburse'>,
   ) {
-    return this.awaitResult(this.disburseRaw(transfer, params));
+    return await this.awaitResult(this.disburseRaw(transfer, params));
   }
 
   /**
@@ -290,8 +318,8 @@ export class ManagedBudget extends DeployableTarget<
    * @public
    * @async
    * @param {(FungibleTransferPayload | ERC1155TransferPayload)} transfer
-   * @param {?WriteParams<typeof managedBudgetAbi, 'disburse'>} [params]
-   * @returns {Promise<boolean>} - True if the disbursement was successful
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} - True if the disbursement was successful
    */
   public async disburseRaw(
     transfer: FungibleTransferPayload | ERC1155TransferPayload,
@@ -317,14 +345,14 @@ export class ManagedBudget extends DeployableTarget<
    * @public
    * @async
    * @param {Array<FungibleTransferPayload | ERC1155TransferPayload>} transfers
-   * @param {?WriteParams<typeof managedBudgetAbi, 'disburseBatch'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} - True if all disbursements were successful
    */
   public async disburseBatch(
     transfers: Array<FungibleTransferPayload | ERC1155TransferPayload>,
     params?: WriteParams<typeof managedBudgetAbi, 'disburseBatch'>,
   ) {
-    return this.awaitResult(this.disburseBatchRaw(transfers, params));
+    return await this.awaitResult(this.disburseBatchRaw(transfers, params));
   }
 
   /**
@@ -333,8 +361,8 @@ export class ManagedBudget extends DeployableTarget<
    * @public
    * @async
    * @param {Array<FungibleTransferPayload | ERC1155TransferPayload>} transfers
-   * @param {?WriteParams<typeof managedBudgetAbi, 'disburseBatch'>} [params]
-   * @returns {Promise<boolean>} - True if all disbursements were successful
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} - True if all disbursements were successful
    */
   public async disburseBatchRaw(
     transfers: Array<FungibleTransferPayload | ERC1155TransferPayload>,
@@ -355,276 +383,10 @@ export class ManagedBudget extends DeployableTarget<
   }
 
   /**
-   * Set the authorized status of the given accounts
-   * The mechanism for managing authorization is left to the implementing contract
-   *
-   * @public
-   * @async
-   * @param {Address[]} addresses - The accounts to authorize or deauthorize
-   * @param {boolean[]} allowed - The authorization status for the given accounts
-   * @param {?WriteParams<typeof managedBudgetAbi, 'setAuthorized'>} [params]
-   * @returns {Promise<void>}
-   */
-  public async setAuthorized(
-    addresses: Address[],
-    allowed: boolean[],
-    params?: WriteParams<typeof managedBudgetAbi, 'setAuthorized'>,
-  ) {
-    return this.awaitResult(this.setAuthorizedRaw(addresses, allowed, params));
-  }
-
-  /**
-   * Set the authorized status of the given accounts
-   * The mechanism for managing authorization is left to the implementing contract
-   *
-   * @public
-   * @async
-   * @param {Address[]} addresses - The accounts to authorize or deauthorize
-   * @param {boolean[]} allowed - The authorization status for the given accounts
-   * @param {?WriteParams<typeof managedBudgetAbi, 'setAuthorized'>} [params]
-   * @returns {Promise<void>}
-   */
-  public async setAuthorizedRaw(
-    addresses: Address[],
-    allowed: boolean[],
-    params?: WriteParams<typeof managedBudgetAbi, 'setAuthorized'>,
-  ) {
-    const { request, result } = await simulateManagedBudgetSetAuthorized(
-      this._config,
-      {
-        address: this.assertValidAddress(),
-        args: [addresses, allowed],
-        ...this.optionallyAttachAccount(),
-        // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-        ...(params as any),
-      },
-    );
-    const hash = await writeManagedBudgetSetAuthorized(this._config, request);
-    return { hash, result };
-  }
-
-  /**
-   * Grant many accounts permissions on the budget.
-   *
-   * @example
-   * ```ts
-   * await budget.grantRoles(['0xfoo', '0xbar], [ManagedBudgetRoles.MANAGER, ManagedBudgetRoles.ADMIN])
-   * ```
-   * @public
-   * @async
-   * @param {Address[]} addresses
-   * @param {bigint[]} roles
-   * @param {?WriteParams<typeof managedBudgetAbi, 'grantRoles'>} [params]
-   * @returns {unknown}
-   */
-  public async grantRoles(
-    addresses: Address[],
-    roles: bigint[],
-    params?: WriteParams<typeof managedBudgetAbi, 'grantRoles'>,
-  ) {
-    return this.awaitResult(this.grantRolesRaw(addresses, roles, params));
-  }
-
-  /**
-   * Grant many accounts permissions on the budget.
-   *
-   * @example
-   * ```ts
-   * await budget.grantRoles(['0xfoo', '0xbar], [ManagedBudgetRoles.MANAGER, ManagedBudgetRoles.ADMIN])
-   *
-   * @public
-   * @async
-   * @param {Address[]} addresses
-   * @param {bigint[]} roles
-   * @param {?WriteParams<typeof managedBudgetAbi, 'grantRoles'>} [params]
-   * @returns {unknown}
-   */
-  public async grantRolesRaw(
-    addresses: Address[],
-    roles: bigint[],
-    params?: WriteParams<typeof managedBudgetAbi, 'grantRoles'>,
-  ) {
-    const { request, result } = await simulateManagedBudgetGrantRoles(
-      this._config,
-      {
-        address: this.assertValidAddress(),
-        args: [addresses, roles],
-        ...this.optionallyAttachAccount(),
-        // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-        ...(params as any),
-      },
-    );
-    const hash = await writeManagedBudgetGrantRoles(
-      this._config,
-      // biome-ignore lint/suspicious/noExplicitAny: negligible low level lack of type intersection
-      request as any,
-    );
-    return { hash, result };
-  }
-
-  /**
-   * Revoke many accounts' permissions on the budget.
-   *
-   * @example
-   * ```ts
-   * await budget.revokeRoles(['0xfoo', '0xbar], [ManagedBudgetRoles.MANAGER, ManagedBudgetRoles.ADMIN])
-   *
-   * @public
-   * @async
-   * @param {Address[]} addresses
-   * @param {bigint[]} roles
-   * @param {?WriteParams<typeof managedBudgetAbi, 'revokeRoles'>} [params]
-   * @returns {unknown}
-   */
-  public async revokeRoles(
-    addresses: Address[],
-    roles: bigint[],
-    params?: WriteParams<typeof managedBudgetAbi, 'revokeRoles'>,
-  ) {
-    return this.awaitResult(this.revokeRolesRaw(addresses, roles, params));
-  }
-
-  /**
-   * Revoke many accounts' permissions on the budget.
-   *
-   * @example
-   * ```ts
-   * await budget.revokeRoles(['0xfoo', '0xbar], [ManagedBudgetRoles.MANAGER, ManagedBudgetRoles.ADMIN])
-   * @public
-   * @async
-   * @param {Address[]} addresses
-   * @param {bigint[]} roles
-   * @param {?WriteParams<typeof managedBudgetAbi, 'revokeRoles'>} [params]
-   * @returns {unknown}
-   */
-  public async revokeRolesRaw(
-    addresses: Address[],
-    roles: bigint[],
-    params?: WriteParams<typeof managedBudgetAbi, 'revokeRoles'>,
-  ) {
-    const { request, result } = await simulateManagedBudgetRevokeRoles(
-      this._config,
-      {
-        address: this.assertValidAddress(),
-        args: [addresses, roles],
-        ...this.optionallyAttachAccount(),
-        // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-        ...(params as any),
-      },
-    );
-    const hash = await writeManagedBudgetRevokeRoles(
-      this._config,
-      // biome-ignore lint/suspicious/noExplicitAny: negligible low level lack of type intersection
-      request as any,
-    );
-    return { hash, result };
-  }
-
-  /**
-   * Return an array of the roles assigned to the given account.
-   * @example
-   * ```ts
-   * (await budget.rolesOf(0xfoo)).includes(ManagedBudgetRoles.ADMIN)
-   * @public
-   * @param {Address} account
-   * @param {?ReadParams<typeof managedBudgetAbi, 'rolesOf'>} [params]
-   * @returns {Promise<Array<bigint>>}
-   */
-  public async rolesOf(
-    account: Address,
-    params?: ReadParams<typeof managedBudgetAbi, 'rolesOf'>,
-  ) {
-    const roles = await readManagedBudgetRolesOf(this._config, {
-      address: this.assertValidAddress(),
-      args: [account],
-      ...this.optionallyAttachAccount(),
-      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-      ...(params as any),
-    });
-    return [ManagedBudgetRoles.MANAGER, ManagedBudgetRoles.ADMIN].filter(
-      (role) => (roles & role) === role,
-    );
-  }
-
-  /**
-   * Returns whether given account has any of the provided roles bitmap.
-   *
-   * @example
-   * ```ts
-   * await budget.hasAnyRole(0xfoo, ManagedBudgetRoles.ADMIN | ManagedBudgetRoles.MANAGER)
-   * @public
-   * @param {Address} account
-   * @param {bigint} roles
-   * @param {?ReadParams<typeof managedBudgetAbi, 'hasAnyRole'>} [params]
-   * @returns {Promise<boolean>}
-   */
-  public hasAnyRole(
-    account: Address,
-    roles: bigint,
-    params?: ReadParams<typeof managedBudgetAbi, 'hasAnyRole'>,
-  ) {
-    return readManagedBudgetHasAnyRole(this._config, {
-      address: this.assertValidAddress(),
-      args: [account, roles],
-      ...this.optionallyAttachAccount(),
-      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-      ...(params as any),
-    });
-  }
-
-  /**
-   * Returns whether given account has all of the provided roles bitmap.
-   *
-   * @example
-   * ```ts
-   * await budget.hasAllRoles(0xfoo, ManagedBudgetRoles.ADMIN & ManagedBudgetRoles.MANAGER)
-   *
-   * @public
-   * @param {Address} account
-   * @param {bigint} roles
-   * @param {?ReadParams<typeof managedBudgetAbi, 'hasAllRoles'>} [params]
-   * @returns {*}
-   */
-  public hasAllRoles(
-    account: Address,
-    roles: bigint,
-    params?: ReadParams<typeof managedBudgetAbi, 'hasAllRoles'>,
-  ) {
-    return readManagedBudgetHasAllRoles(this._config, {
-      address: this.assertValidAddress(),
-      args: [account, roles],
-      ...this.optionallyAttachAccount(),
-      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-      ...(params as any),
-    });
-  }
-
-  /**
-   * Check if the given account is authorized to use the budget
-   *
-   * @public
-   * @param {Address} account
-   * @param {?ReadParams<typeof managedBudgetAbi, 'isAuthorized'>} [params]
-   * @returns {Promise<boolean>} - True if the account is authorized
-   */
-  public isAuthorized(
-    account: Address,
-    params?: ReadParams<typeof managedBudgetAbi, 'isAuthorized'>,
-  ) {
-    return readManagedBudgetIsAuthorized(this._config, {
-      address: this.assertValidAddress(),
-      args: [account],
-      ...this.optionallyAttachAccount(),
-      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-      ...(params as any),
-    });
-  }
-
-  /**
    * Get the owner of the budget
    *
    * @public
-   * @param {?ReadParams<typeof managedBudgetAbi, 'owner'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<Address>}
    */
   public owner(params?: ReadParams<typeof managedBudgetAbi, 'owner'>) {
@@ -641,13 +403,13 @@ export class ManagedBudget extends DeployableTarget<
    * If a tokenId is provided, get the total amount of ERC1155 assets allocated to the budget, including any that have been distributed
    *
    * @public
-   * @param {Address} asset - The address of the asset
+   * @param {Address} [asset="0x0000000000000000000000000000000000000000"] - The address of the asset
    * @param {?(bigint | undefined)} [tokenId] - The ID of the token
-   * @param {?ReadParams<typeof managedBudgetAbi, 'total'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>} - The total amount of assets
    */
   public total(
-    asset: Address,
+    asset: Address = zeroAddress,
     tokenId?: bigint | undefined,
     params?: ReadParams<typeof managedBudgetAbi, 'total'>,
   ) {
@@ -664,13 +426,13 @@ export class ManagedBudget extends DeployableTarget<
    * If a tokenId is provided, get the amount of ERC1155 assets available for distribution from the budget
    *
    * @public
-   * @param {Address} asset
+   * @param {Address} [asset="0x0000000000000000000000000000000000000000"]
    * @param {?(bigint | undefined)} [tokenId]
-   * @param {?ReadParams<typeof managedBudgetAbi, 'available'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>} - The amount of assets available
    */
   public available(
-    asset: Address,
+    asset: Address = zeroAddress,
     tokenId?: bigint | undefined,
     params?: ReadParams<typeof managedBudgetAbi, 'available'>,
   ) {
@@ -687,13 +449,13 @@ export class ManagedBudget extends DeployableTarget<
    * If a tokenId is provided, get the amount of ERC1155 assets that have been distributed from the budget
    *
    * @public
-   * @param {Address} asset
+   * @param {Address} [asset="0x0000000000000000000000000000000000000000"]
    * @param {?(bigint | undefined)} [tokenId]
-   * @param {?ReadParams<typeof managedBudgetAbi, 'distributed'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>} - The amount of assets distributed
    */
   public distributed(
-    asset: Address,
+    asset: Address = zeroAddress,
     tokenId?: bigint | undefined,
     params?: ReadParams<typeof managedBudgetAbi, 'distributed'>,
   ) {
@@ -741,3 +503,26 @@ export class ManagedBudget extends DeployableTarget<
     };
   }
 }
+
+/**
+ * Given a {@link ManagedBudgetPayload}, properly encode a `ManagedBudget.InitPayload` for use with {@link ManagedBudget} initialization.
+ *
+ * @param {ManagedBudgetPayload} param0
+ * @param {Address} param0.owner - The budget's owner
+ * @param {{}} param0.authorized - List of accounts authorized to use the budget. This list should include a Boost core address to interact with the protocol.
+ * @param {{}} param0.roles - List of roles to assign to the corresponding account by index.
+ * @returns {Hex}
+ */
+export const prepareManagedBudgetPayload = ({
+  owner,
+  authorized,
+  roles,
+}: ManagedBudgetPayload) => {
+  return encodeAbiParameters(
+    parseAbiParameters([
+      'ManagedBudgetPayload payload',
+      'struct ManagedBudgetPayload { address owner; address[] authorized; uint256[] roles; }',
+    ]),
+    [{ owner, authorized, roles: roles as unknown as Array<bigint> }],
+  );
+};

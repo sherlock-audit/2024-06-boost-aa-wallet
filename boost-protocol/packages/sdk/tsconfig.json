@@ -3,12 +3,16 @@
   "include": ["vite-env.d.ts", "src"],
   "compilerOptions": {
     "rootDir": "./src",
-    "outDir": "dist"
+    "outDir": "dist",
+    "composite": true
   },
-  "exclude": ["dist", "build", "node_modules", "src/**/*.test.ts"],
+  "exclude": ["build", "node_modules"],
   "references": [
     {
       "path": "../evm"
+    },
+    {
+      "path": "../../test"
     }
   ]
 }

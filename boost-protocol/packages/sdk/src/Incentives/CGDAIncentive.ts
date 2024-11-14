@@ -15,26 +15,108 @@ import {
   writeCgdaIncentiveClawback,
 } from '@boostxyz/evm';
 import { bytecode } from '@boostxyz/evm/artifacts/contracts/incentives/CGDAIncentive.sol/CGDAIncentive.json';
-import type { Address, ContractEventName, Hex } from 'viem';
+import {
+  type Address,
+  type ContractEventName,
+  type Hex,
+  encodeAbiParameters,
+  zeroHash,
+} from 'viem';
+import { CGDAIncentive as CGDAIncentiveBases } from '../../dist/deployments.json';
 import type {
   DeployableOptions,
   GenericDeployableParams,
 } from '../Deployable/Deployable';
 import { DeployableTarget } from '../Deployable/DeployableTarget';
+import { type ClaimPayload, prepareClaimPayload } from '../claiming';
 import {
-  type CGDAIncentivePayload,
-  type CGDAParameters,
-  type ClaimPayload,
   type GenericLog,
   type ReadParams,
   RegistryType,
   type WriteParams,
-  prepareCGDAIncentivePayload,
-  prepareClaimPayload,
 } from '../utils';
 
 export { cgdaIncentiveAbi };
-export type { CGDAIncentivePayload };
+
+/**
+ * The object representation of a `CGDAIncentive.InitPayload`
+ *
+ * @export
+ * @interface CGDAIncentivePayload
+ * @typedef {CGDAIncentivePayload}
+ */
+export interface CGDAIncentivePayload {
+  /**
+   * The address of the ERC20-like token
+   *
+   * @type {Address}
+   */
+  asset: Address;
+  /**
+   * The initial reward amount
+   *
+   * @type {bigint}
+   */
+  initialReward: bigint;
+  /**
+   * The amount to subtract from the current reward after each claim
+   *
+   * @type {bigint}
+   */
+  rewardDecay: bigint;
+  /**
+   * The amount by which the reward increases for each hour without a claim (continuous linear increase)
+   *
+   * @type {bigint}
+   */
+  rewardBoost: bigint;
+  /**
+   * The total budget for the incentive
+   *
+   * @type {bigint}
+   */
+  totalBudget: bigint;
+  /**
+   * The entity that can `clawback` funds
+   *
+   * @type {Address}
+   */
+  manager: Address;
+}
+
+/**
+ *  The configuration parameters for the CGDAIncentive
+ *
+ * @export
+ * @interface CGDAParameters
+ * @typedef {CGDAParameters}
+ */
+export interface CGDAParameters {
+  /**
+   * The amount to subtract from the current reward after each claim
+   *
+   * @type {bigint}
+   */
+  rewardDecay: bigint;
+  /**
+   * The amount by which the reward increases for each hour without a claim (continuous linear increase)
+   *
+   * @type {bigint}
+   */
+  rewardBoost: bigint;
+  /**
+   * The timestamp of the last claim
+   *
+   * @type {bigint}
+   */
+  lastClaimTime: bigint;
+  /**
+   * The current reward amount
+   *
+   * @type {bigint}
+   */
+  currentReward: bigint;
+}
 
 /**
  * A generic `viem.Log` event with support for `CGDAIncentive` event types.
@@ -70,10 +152,12 @@ export class CGDAIncentive extends DeployableTarget<
    *
    * @public
    * @static
-   * @type {Address}
+   * @type {Record<number, Address>}
    */
-  public static override base: Address = import.meta.env
-    .VITE_CGDA_INCENTIVE_BASE;
+  public static override bases: Record<number, Address> = {
+    31337: import.meta.env.VITE_CGDA_INCENTIVE_BASE,
+    ...(CGDAIncentiveBases as Record<number, Address>),
+  };
   /**
    * @inheritdoc
    *
@@ -88,11 +172,11 @@ export class CGDAIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof cgdaIncentiveAbi, 'owner'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>}
    */
   public async owner(params?: ReadParams<typeof cgdaIncentiveAbi, 'owner'>) {
-    return readCgdaIncentiveOwner(this._config, {
+    return await readCgdaIncentiveOwner(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -105,11 +189,11 @@ export class CGDAIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof cgdaIncentiveAbi, 'claims'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async claims(params?: ReadParams<typeof cgdaIncentiveAbi, 'claims'>) {
-    return readCgdaIncentiveClaims(this._config, {
+    return await readCgdaIncentiveClaims(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -122,11 +206,11 @@ export class CGDAIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof allowListIncentiveAbi, 'reward'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async reward(params?: ReadParams<typeof cgdaIncentiveAbi, 'reward'>) {
-    return readCgdaIncentiveReward(this._config, {
+    return await readCgdaIncentiveReward(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -140,14 +224,14 @@ export class CGDAIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {Address} address
-   * @param {?ReadParams<typeof cgdaIncentiveAbi, 'claimed'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<boolean>}
    */
   public async claimed(
     address: Address,
     params?: ReadParams<typeof cgdaIncentiveAbi, 'claimed'>,
   ) {
-    return readCgdaIncentiveClaimed(this._config, {
+    return await readCgdaIncentiveClaimed(this._config, {
       address: this.assertValidAddress(),
       args: [address],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -160,11 +244,11 @@ export class CGDAIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof cgdaIncentiveAbi, 'asset'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>}
    */
   public async asset(params?: ReadParams<typeof cgdaIncentiveAbi, 'asset'>) {
-    return readCgdaIncentiveAsset(this._config, {
+    return await readCgdaIncentiveAsset(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -176,7 +260,7 @@ export class CGDAIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof cgdaIncentiveAbi, 'cgdaParams'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<CGDAParameters>}
    */
   public async cgdaParams(
@@ -201,13 +285,13 @@ export class CGDAIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof cgdaIncentiveAbi, 'totalBudget'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async totalBudget(
     params?: ReadParams<typeof cgdaIncentiveAbi, 'totalBudget'>,
   ) {
-    return readCgdaIncentiveTotalBudget(this._config, {
+    return await readCgdaIncentiveTotalBudget(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -220,14 +304,14 @@ export class CGDAIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof cgdaIncentiveAbi, 'claim'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} - Returns true if successfully claimed
    */
-  public async claim(
+  protected async claim(
     payload: ClaimPayload,
     params?: WriteParams<typeof cgdaIncentiveAbi, 'claim'>,
   ) {
-    return this.awaitResult(this.claimRaw(payload, params));
+    return await this.awaitResult(this.claimRaw(payload, params));
   }
 
   /**
@@ -236,10 +320,10 @@ export class CGDAIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof cgdaIncentiveAbi, 'claim'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} - Returns true if successfully claimed
    */
-  public async claimRaw(
+  protected async claimRaw(
     payload: ClaimPayload,
     params?: WriteParams<typeof cgdaIncentiveAbi, 'claim'>,
   ) {
@@ -260,14 +344,14 @@ export class CGDAIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof cgdaIncentiveAbi, 'clawback'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} -  True if the assets were successfully clawbacked
    */
   public async clawback(
     payload: ClaimPayload,
     params?: WriteParams<typeof cgdaIncentiveAbi, 'clawback'>,
   ) {
-    return this.awaitResult(this.clawbackRaw(payload, params));
+    return await this.awaitResult(this.clawbackRaw(payload, params));
   }
 
   /**
@@ -276,7 +360,7 @@ export class CGDAIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof cgdaIncentiveAbi, 'clawback'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} -  True if the assets were successfully clawbacked
    */
   public async clawbackRaw(
@@ -303,14 +387,14 @@ export class CGDAIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?ReadParams<typeof cgdaIncentiveAbi, 'isClaimable'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<boolean>} - True if the incentive is claimable based on the data payload
    */
   public async isClaimable(
     payload: ClaimPayload,
     params?: ReadParams<typeof cgdaIncentiveAbi, 'isClaimable'>,
   ) {
-    return readCgdaIncentiveIsClaimable(this._config, {
+    return await readCgdaIncentiveIsClaimable(this._config, {
       address: this.assertValidAddress(),
       args: [prepareClaimPayload(payload)],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -325,13 +409,13 @@ export class CGDAIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof cgdaIncentiveAbi, 'currentReward'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>} - The current reward
    */
   public async currentReward(
     params?: ReadParams<typeof cgdaIncentiveAbi, 'currentReward'>,
   ) {
-    return readCgdaIncentiveCurrentReward(this._config, {
+    return await readCgdaIncentiveCurrentReward(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -361,4 +445,45 @@ export class CGDAIncentive extends DeployableTarget<
       ...this.optionallyAttachAccount(options.account),
     };
   }
+
+  /**
+   * Builds the claim data for the CGDAIncentive.
+   *
+   * @public
+   * @returns {Hash} A `zeroHash`, as CGDAIncentive doesn't require specific claim data.
+   * @description This function returns `zeroHash` because CGDAIncentive doesn't use any specific claim data.
+   */
+  public buildClaimData() {
+    return zeroHash;
+  }
+}
+
+/**
+ * Given a {@link CGDAIncentivePayload}, properly encode a `CGDAIncentive.InitPayload` for use with {@link CGDAIncentive} initialization.
+ *
+ * @param {CGDAIncentivePayload} param0
+ * @param {Address} param0.asset - The address of the ERC20-like token
+ * @param {bigint} param0.initialReward - The initial reward amount
+ * @param {bigint} param0.rewardDecay - The amount to subtract from the current reward after each claim
+ * @param {bigint} param0.rewardBoost - The amount by which the reward increases for each hour without a claim (continuous linear increase)
+ * @param {bigint} param0.totalBudget - The total budget for the incentive
+ * @returns {Hex}
+ */
+export function prepareCGDAIncentivePayload({
+  asset,
+  initialReward,
+  rewardDecay,
+  rewardBoost,
+  totalBudget,
+}: CGDAIncentivePayload) {
+  return encodeAbiParameters(
+    [
+      { type: 'address', name: 'asset' },
+      { type: 'uint256', name: 'initialReward' },
+      { type: 'uint256', name: 'rewardDecay' },
+      { type: 'uint256', name: 'rewardBoost' },
+      { type: 'uint256', name: 'totalBudget' },
+    ],
+    [asset, initialReward, rewardDecay, rewardBoost, totalBudget],
+  );
 }

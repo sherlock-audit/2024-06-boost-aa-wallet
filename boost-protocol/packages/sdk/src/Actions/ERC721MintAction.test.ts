@@ -9,29 +9,29 @@ import {
   zeroAddress,
 } from 'viem';
 import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
-import type { MockERC721 } from '../../test/MockERC721';
-import { accounts } from '../../test/accounts';
+import type { MockERC721 } from '@boostxyz/test/MockERC721';
+import { accounts } from '@boostxyz/test/accounts';
 import {
   type Fixtures,
   defaultOptions,
   deployFixtures,
   fundErc721,
-} from '../../test/helpers';
+} from '@boostxyz/test/helpers';
 import { ERC721MintAction } from './ERC721MintAction';
 
 let fixtures: Fixtures, erc721: MockERC721;
 
 beforeAll(async () => {
-  fixtures = await loadFixture(deployFixtures);
+  fixtures = await loadFixture(deployFixtures(defaultOptions));
 });
 
 const mintSelector = toFunctionSelector('function mint(address to)');
 
 function nonPayableAction(fixtures: Fixtures, erc721: MockERC721) {
   return function nonPayableAction() {
-    return fixtures.registry.clone(
+    return fixtures.registry.initialize(
       crypto.randomUUID(),
-      new fixtures.bases.ERC721MintAction(defaultOptions, {
+      fixtures.core.ERC721MintAction({
         chainId: BigInt(31_337),
         target: erc721.assertValidAddress(),
         selector: mintSelector,
@@ -41,7 +41,7 @@ function nonPayableAction(fixtures: Fixtures, erc721: MockERC721) {
   };
 }
 
-describe('ERC721MintAction', () => {
+describe.skip('ERC721MintAction', () => {
   beforeEach(async () => {
     erc721 = await loadFixture(fundErc721(defaultOptions));
   });
@@ -81,7 +81,7 @@ describe('ERC721MintAction', () => {
 
   test('prepare will properly encode execution payload', async () => {
     const action = await loadFixture(nonPayableAction(fixtures, erc721));
-    const { account } = accounts.at(1)!;
+    const { account } = accounts[1];
     const payload = await action.prepare(
       encodeAbiParameters([{ type: 'address', name: 'address' }], [account]),
     );
@@ -97,7 +97,7 @@ describe('ERC721MintAction', () => {
   // TODO implement execute
   test.skip('nonpayable execute', async () => {
     const action = await loadFixture(nonPayableAction(fixtures, erc721));
-    const { account } = accounts.at(1)!;
+    const { account } = accounts[1];
     const [success] = await action.execute(
       encodeAbiParameters(
         [

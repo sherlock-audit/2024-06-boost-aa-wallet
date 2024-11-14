@@ -125,6 +125,38 @@ contract SignerValidatorTest is Test {
         assertTrue(validator.validate(boostId, incentiveId, claimant, claimData));
     }
 
+    function testValidate_MalleableSignature() public {
+        uint256 boostId = 5;
+        uint256 incentiveId = 1;
+        uint8 incentiveQuantity = 2;
+        address claimant = makeAddr("claimant");
+        bytes memory incentiveData = hex"def456232173821931823712381232131391321934";
+        bytes32 msgHash = validator.hashSignerData(boostId, incentiveQuantity, claimant, incentiveData);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(testSignerKey, msgHash);
+
+        bytes memory originalSignature = _packSignature(v, r, s);
+
+        s = bytes32(uint256(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141) - uint256(s));
+
+        if (v == 27) {
+            v = 28;
+        } else {
+            v = 27;
+        }
+
+        ASignerValidator.SignerValidatorInputParams memory validatorData =
+            ASignerValidator.SignerValidatorInputParams(testSigner, _packSignature(v, r, s), incentiveQuantity);
+        bytes memory claimData = abi.encode(IBoostClaim.BoostClaimData(abi.encode(validatorData), incentiveData));
+        assertTrue(validator.validate(boostId, incentiveId, claimant, claimData));
+
+        // attempt to replay the signature
+        validatorData = ASignerValidator.SignerValidatorInputParams(testSigner, originalSignature, incentiveQuantity);
+        claimData = abi.encode(IBoostClaim.BoostClaimData(abi.encode(validatorData), incentiveData));
+
+        vm.expectRevert(abi.encodeWithSelector(BoostError.IncentiveClaimed.selector, incentiveId));
+        validator.validate(boostId, incentiveId, claimant, claimData);
+    }
+
     function testValidate_UnauthorizerCaller() public {
         address badCaller = makeAddr("badValidatorCaller");
 
@@ -328,37 +360,5 @@ contract SignerValidatorTest is Test {
 
     function _packSignature(uint8 v, bytes32 r, bytes32 s) internal pure returns (bytes memory) {
         return abi.encodePacked(r, s, v);
-    }
-}
-
-///////////////////////////////////////
-//      IncentiveBits Library        //
-///////////////////////////////////////
-
-contract IncentiveBitsTest is Test {
-    using IncentiveBits for IncentiveBits.IncentiveMap;
-
-    IncentiveBits.IncentiveMap _used;
-
-    bytes32 private fakeHash = hex"123abc";
-
-    function testIncentiveBitsWorks() public {
-        for (uint8 x = 0; x < 8; x++) {
-            _used.setOrThrow(fakeHash, x);
-        }
-        uint8 map = _used.map[fakeHash];
-        assertEq(type(uint8).max, map);
-    }
-
-    function testIncentiveBitsBitTooLarge(uint8 badIndex) public {
-        vm.assume(badIndex > 7);
-        vm.expectRevert(abi.encodeWithSelector(BoostError.IncentiveToBig.selector, badIndex));
-        _used.setOrThrow(fakeHash, badIndex);
-    }
-
-    function testIncentiveRevertsIfToggledAgain() public {
-        _used.setOrThrow(fakeHash, 7);
-        vm.expectRevert(abi.encodeWithSelector(BoostError.IncentiveClaimed.selector, 7));
-        _used.setOrThrow(fakeHash, 7);
     }
 }

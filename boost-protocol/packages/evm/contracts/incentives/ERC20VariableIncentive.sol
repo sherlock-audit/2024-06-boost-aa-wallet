@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.24;
 
-import {Ownable as AOwnable} from "@solady/auth/Ownable.sol";
 import {LibPRNG} from "@solady/utils/LibPRNG.sol";
 import {SafeTransferLib} from "@solady/utils/SafeTransferLib.sol";
 import {ACloneable} from "contracts/shared/ACloneable.sol";
@@ -11,10 +10,11 @@ import {AERC20VariableIncentive} from "contracts/incentives/AERC20VariableIncent
 import {ABudget} from "contracts/budgets/ABudget.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AIncentive} from "contracts/incentives/AIncentive.sol";
+import {RBAC} from "contracts/shared/RBAC.sol";
 
 /// @title ERC20 Incentive with Variable Rewards
 /// @notice A modified ERC20 incentive implementation that allows claiming of variable token amounts with a spending limit
-contract ERC20VariableIncentive is AERC20VariableIncentive, AOwnable {
+contract ERC20VariableIncentive is AERC20VariableIncentive, RBAC {
     using SafeTransferLib for address;
 
     /// @notice The reward multiplier; if 0, the signed amount from the claim payload is used directly
@@ -33,8 +33,7 @@ contract ERC20VariableIncentive is AERC20VariableIncentive, AOwnable {
 
     /// @notice Initialize the contract with the incentive parameters
     /// @param data_ The compressed incentive parameters `(address asset, uint256 reward, uint256 limit)`
-    function initialize(bytes calldata data_) public override initializer {
-        _initializeOwner(msg.sender);
+    function initialize(bytes calldata data_) public virtual override initializer {
         InitPayload memory init_ = abi.decode(data_, (InitPayload));
 
         address asset_ = init_.asset;
@@ -54,12 +53,13 @@ contract ERC20VariableIncentive is AERC20VariableIncentive, AOwnable {
         totalClaimed = 0;
 
         _initializeOwner(msg.sender);
+        _setRoles(msg.sender, MANAGER_ROLE);
     }
 
     /// @notice Claim the incentive with variable rewards
     /// @param data_ The data payload for the incentive claim `(uint256signedAmount)`
     /// @return True if the incentive was successfully claimed
-    function claim(address claimTarget, bytes calldata data_) external override onlyOwner returns (bool) {
+    function claim(address claimTarget, bytes calldata data_) external virtual override onlyOwner returns (bool) {
         BoostClaimData memory boostClaimData = abi.decode(data_, (BoostClaimData));
         uint256 signedAmount = abi.decode(boostClaimData.incentiveData, (uint256));
         uint256 claimAmount;
@@ -75,6 +75,7 @@ contract ERC20VariableIncentive is AERC20VariableIncentive, AOwnable {
         if (totalClaimed + claimAmount > limit) revert ClaimFailed();
 
         totalClaimed += claimAmount;
+        claims += 1;
         asset.safeTransfer(claimTarget, claimAmount);
 
         emit Claimed(claimTarget, abi.encodePacked(asset, claimTarget, claimAmount));
@@ -95,7 +96,7 @@ contract ERC20VariableIncentive is AERC20VariableIncentive, AOwnable {
     }
 
     /// @inheritdoc AIncentive
-    function clawback(bytes calldata data_) external override onlyOwner returns (bool) {
+    function clawback(bytes calldata data_) external override onlyRoles(MANAGER_ROLE) returns (uint256, address) {
         ClawbackPayload memory claim_ = abi.decode(data_, (ClawbackPayload));
         (uint256 amount) = abi.decode(claim_.data, (uint256));
 
@@ -105,7 +106,7 @@ contract ERC20VariableIncentive is AERC20VariableIncentive, AOwnable {
         asset.safeTransfer(claim_.target, amount);
         emit Claimed(claim_.target, abi.encodePacked(asset, claim_.target, amount));
 
-        return true;
+        return (amount, asset);
     }
 
     /// @inheritdoc AIncentive
@@ -114,7 +115,7 @@ contract ERC20VariableIncentive is AERC20VariableIncentive, AOwnable {
     /// @return budgetData The {Transfer} payload to be passed to the {ABudget} for interpretation
     function preflight(bytes calldata data_) external view override returns (bytes memory budgetData) {
         // TODO: remove unused reward param
-        (address asset_, uint256 reward_, uint256 limit_) = abi.decode(data_, (address, uint256, uint256));
+        (address asset_,, uint256 limit_) = abi.decode(data_, (address, uint256, uint256));
 
         return abi.encode(
             ABudget.Transfer({

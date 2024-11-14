@@ -1,6 +1,7 @@
 import {
   boostRegistryAbi,
   readBoostRegistryGetBaseImplementation,
+  readBoostRegistryGetClone,
   readBoostRegistryGetCloneIdentifier,
   readBoostRegistryGetClones,
   simulateBoostRegistryDeployClone,
@@ -10,11 +11,14 @@ import {
 } from '@boostxyz/evm';
 import { bytecode } from '@boostxyz/evm/artifacts/contracts/BoostRegistry.sol/BoostRegistry.json';
 import {
+  type Abi,
   type Address,
   type ContractEventName,
   type Hex,
   isAddress,
+  zeroAddress,
 } from 'viem';
+import { BoostRegistry as BoostRegistryBases } from '../dist/deployments.json';
 import {
   Deployable,
   type DeployableOptions,
@@ -25,20 +29,37 @@ import {
   type GenericLog,
   type HashAndSimulatedResult,
   type ReadParams,
-  RegistryType,
+  type RegistryType,
   type WriteParams,
+  assertValidAddressByChainId,
 } from './utils';
 
-export { RegistryType, boostRegistryAbi };
+/**
+ * The ABI of the BoostRegistry contract, if needed for low level operations
+ *
+ * @type {typeof boostRegistryAbi}
+ */
+export { boostRegistryAbi };
 
 /**
- * The fixed address for the Boost Registry.
- * By default, `new BoostRegistry` will use this address if not otherwise provided.
+ * The fixed addresses for the deployed Boost Registry.
+ * By default, `new BoostRegistry` will use the address deployed to the currently connected chain, or `BOOST_REGISTRY_ADDRESS` if not provided.
+ *
+ * @type {Record<number, Address>}
+ */
+export const BOOST_REGISTRY_ADDRESSES: Record<number, Address> = {
+  31337: import.meta.env.VITE_BOOST_REGISTRY_ADDRESS,
+  ...(BoostRegistryBases as Record<number, Address>),
+};
+
+/**
+ * The address of the deployed `BoostRegistry` instance. In prerelease mode, this will be its sepolia address
  *
  * @type {Address}
  */
-export const BOOST_REGISTRY_ADDRESS: Address = import.meta.env
-  .VITE_BOOST_REGISTRY_ADDRESS;
+export const BOOST_REGISTRY_ADDRESS =
+  BOOST_REGISTRY_ADDRESSES[__DEFAULT_CHAIN_ID__ as unknown as number] ||
+  zeroAddress;
 
 /**
  * A record of `BoostRegistry` event names to `AbiEvent` objects for use with `getLogs`
@@ -54,6 +75,24 @@ export type BoostRegistryLog<
     typeof boostRegistryAbi
   >,
 > = GenericLog<typeof boostRegistryAbi, event>;
+
+/**
+ * An interface representing an on-chain Clone
+ *
+ * @export
+ * @interface Clone
+ * @typedef {Clone}
+ */
+export interface Clone {
+  // The clone's component type'
+  baseType: RegistryType;
+  // The address of the initialized clone.
+  instance: Address;
+  // The deployer of the clone.
+  deployer: Address;
+  // The display name of the clone
+  name: string;
+}
 
 /**
  * Instantiation options for a previously deployed Boost Registry
@@ -152,6 +191,26 @@ export class BoostRegistry extends Deployable<
   typeof boostRegistryAbi
 > {
   /**
+   * A static property representing a map of stringified chain ID's to the address of the deployed implementation on chain
+   *
+   * @static
+   * @readonly
+   * @type {Record<string, Address>}
+   */
+  static readonly addresses: Record<number, Address> = BOOST_REGISTRY_ADDRESSES;
+
+  /**
+   * A getter that will return Boost registry's static addresses by numerical chain ID
+   *
+   * @public
+   * @readonly
+   * @type {Record<number, Address>}
+   */
+  public get addresses(): Record<number, Address> {
+    return (this.constructor as typeof BoostRegistry).addresses;
+  }
+
+  /**
    * Creates an instance of BoostRegistry.
    *
    * @see {@link BoostRegistryConfig}
@@ -167,7 +226,11 @@ export class BoostRegistry extends Deployable<
     } else if (isBoostRegistryDeployable(options)) {
       super({ account, config }, []);
     } else {
-      super({ account, config }, BOOST_REGISTRY_ADDRESS);
+      const { address } = assertValidAddressByChainId(
+        config,
+        BOOST_REGISTRY_ADDRESSES,
+      );
+      super({ account, config }, address);
     }
   }
 
@@ -179,8 +242,8 @@ export class BoostRegistry extends Deployable<
    * @param {RegistryType} registryType - The base type for the implementation
    * @param {string} name - A name for the implementation (must be unique within the given type)
    * @param {Address} implementation - The address of the implementation contract
-   * @param {?WriteParams<typeof boostRegistryAbi, 'register'>} [params] - Optional params to provide the underlying Viem contract call
-   * @returns {unknown}
+   * @param {?WriteParams} [params] - Optional params to provide the underlying Viem contract call
+   * @returns {Promise<void>}
    * @example
    * ```ts
    * await registry.register(ContractAction.registryType, 'ContractAction', ContractAction.base)
@@ -192,7 +255,7 @@ export class BoostRegistry extends Deployable<
     implementation: Address,
     params?: WriteParams<typeof boostRegistryAbi, 'register'>,
   ) {
-    return this.awaitResult(
+    return await this.awaitResult(
       this.registerRaw(registryType, name, implementation, params),
     );
   }
@@ -204,8 +267,8 @@ export class BoostRegistry extends Deployable<
    * @param {RegistryType} registryType
    * @param {string} name
    * @param {Address} implementation
-   * @param {?WriteParams<typeof boostRegistryAbi, 'register'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: void; }>}
    */
   public async registerRaw(
     registryType: RegistryType,
@@ -216,7 +279,11 @@ export class BoostRegistry extends Deployable<
     const { request, result } = await simulateBoostRegistryRegister(
       this._config,
       {
-        address: this.assertValidAddress(),
+        ...assertValidAddressByChainId(
+          this._config,
+          this.addresses,
+          params?.chain?.id || params?.chainId,
+        ),
         args: [registryType, name, implementation],
         ...this.optionallyAttachAccount(),
         // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -228,6 +295,52 @@ export class BoostRegistry extends Deployable<
   }
 
   /**
+   * Initialize a new instance of a registered base implementation, returning the provided target with a new address set on it.
+   * This method is the same as `clone`, but serves to make its function more obvious as to why you'd need to use it.
+   *
+   * @public
+   * @async
+   * @template {DeployableTarget} Target
+   * @param {string} displayName - The display name for the clone
+   * @param {Target} target - An instance of a target contract to clone and initialize
+   * @param {?WriteParams} [params]
+   * @returns {Promise<Target>} - The provided instance, but with a new address attached.
+   * biome-ignore lint/suspicious/noExplicitAny: any deployable target will suffice
+   */
+  public initialize<Target extends DeployableTarget<any, any>>(
+    displayName: string,
+    target: Target,
+    params?: WriteParams<typeof boostRegistryAbi, 'deployClone'>,
+  ): Promise<Target> {
+    return this.clone(displayName, target, params);
+  }
+
+  /**
+   * Initialize a new instance of a registered base implementation, returning a transaction hash, resulting address from simulated transaction, and the given target bound to the resulting address.
+   * This method is the same as `deployCloneRaw`, but serves to make its function more obvious as to why you'd need to use it.
+   *
+   * @public
+   * @async
+   * @template {DeployableTarget} Target
+   * @param {string} displayName - The display name for the clone
+   * @param {Target} target - An instance of a target contract to clone and initialize
+   * @param {?WriteParams} [params]
+   * @returns {Promise<HashAndSimulatedResult<Address> & { target: Target } >} - The transaction hash, simulated return address, and given target bound to simulated return address
+   */
+  public async initializeRaw<Target extends DeployableTarget<unknown, Abi>>(
+    displayName: string,
+    target: Target,
+    params?: WriteParams<typeof boostRegistryAbi, 'deployClone'>,
+  ): Promise<HashAndSimulatedResult<Address> & { target: Target }> {
+    const { hash, result } = await this.deployCloneRaw(
+      displayName,
+      target,
+      params,
+    );
+    return { hash, result, target: target.at(result) };
+  }
+
+  /**
    * Deploy a new instance of a registered base implementation, returning the provided target with a new address set on it.
    *
    * @public
@@ -235,8 +348,8 @@ export class BoostRegistry extends Deployable<
    * @template {DeployableTarget} Target
    * @param {string} displayName - The display name for the clone
    * @param {Target} target - An instance of a target contract to clone and initialize
-   * @param {?WriteParams<typeof boostRegistryAbi, 'deployClone'>} [params]
-   * @returns {Target} - The provided instance, but with a new address attached.
+   * @param {?WriteParams} [params]
+   * @returns {Promise<Target>} - The provided instance, but with a new address attached.
    * biome-ignore lint/suspicious/noExplicitAny: any deployable target will suffice
    */
   public async clone<Target extends DeployableTarget<any, any>>(
@@ -256,8 +369,8 @@ export class BoostRegistry extends Deployable<
    * @template {DeployableTarget} Target
    * @param {string} displayName
    * @param {Target} target
-   * @param {?WriteParams<typeof boostRegistryAbi, 'deployClone'>} [params]
-   * @returns {Target}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<Address>}
    * biome-ignore lint/suspicious/noExplicitAny: any deployable target will suffice
    */
   public async deployClone<Target extends DeployableTarget<any, any>>(
@@ -265,7 +378,9 @@ export class BoostRegistry extends Deployable<
     target: Target,
     params?: WriteParams<typeof boostRegistryAbi, 'deployClone'>,
   ): Promise<Address> {
-    return this.awaitResult(this.deployCloneRaw(displayName, target, params));
+    return await this.awaitResult(
+      this.deployCloneRaw(displayName, target, params),
+    );
   }
 
   /**
@@ -274,8 +389,8 @@ export class BoostRegistry extends Deployable<
    * @async
    * @param {string} displayName
    * @param {DeployableTarget} target
-   * @param {?WriteParams<typeof boostRegistryAbi, 'deployClone'>} [params]
-   * @returns {unknown} - The transaction hash
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: Hex, result: Address }>} - The transaction hash
    * biome-ignore lint/suspicious/noExplicitAny: any deployable target will suffice
    */
   public async deployCloneRaw<Target extends DeployableTarget<any, any>>(
@@ -287,16 +402,20 @@ export class BoostRegistry extends Deployable<
       config: this._config,
       account: this._account,
     });
+    const { address: baseAddress } = assertValidAddressByChainId(
+      this._config,
+      target.bases,
+      params?.chain?.id || params?.chainId,
+    );
     const { request, result } = await simulateBoostRegistryDeployClone(
       this._config,
       {
-        address: this.assertValidAddress(),
-        args: [
-          target.registryType,
-          target.base,
-          displayName,
-          payload.args.at(0)!,
-        ],
+        ...assertValidAddressByChainId(
+          this._config,
+          this.addresses,
+          params?.chain?.id || params?.chainId,
+        ),
+        args: [target.registryType, baseAddress, displayName, payload.args[0]],
         ...this.optionallyAttachAccount(),
         // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
         ...(params as any),
@@ -313,15 +432,19 @@ export class BoostRegistry extends Deployable<
    * @public
    * @async
    * @param {Hex} identifier - The unique identifier for the implementation (see {getIdentifier})
-   * @param {?ReadParams<typeof boostRegistryAbi, 'getBaseImplementation'>} [params]
-   * @returns {unknown} - The address of the implementation
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>} - The address of the implementation
    */
   public async getBaseImplementation(
     identifier: Hex,
     params?: ReadParams<typeof boostRegistryAbi, 'getBaseImplementation'>,
   ) {
-    return readBoostRegistryGetBaseImplementation(this._config, {
-      address: this.assertValidAddress(),
+    return await readBoostRegistryGetBaseImplementation(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [identifier],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -330,20 +453,24 @@ export class BoostRegistry extends Deployable<
   }
 
   /**
-   * Get the address of a deployed clone by its identifier (index in incentives array)
+   * Get the address of a deployed clone by its identifier
    *
    * @public
    * @async
    * @param {Hex} identifier - The unique identifier for the deployed clone (see {getCloneIdentifier})
-   * @param {?ReadParams<typeof boostRegistryAbi, 'getClone'>} [params]
-   * @returns {Promise<Address>} - The address of the deployed clone
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Clone>} - The on-chain representation of the clone
    */
   public async getClone(
     identifier: Hex,
     params?: ReadParams<typeof boostRegistryAbi, 'getClone'>,
-  ) {
-    return readBoostRegistryGetBaseImplementation(this._config, {
-      address: this.assertValidAddress(),
+  ): Promise<Clone> {
+    return await readBoostRegistryGetClone(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [identifier],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -357,15 +484,19 @@ export class BoostRegistry extends Deployable<
    * @public
    * @async
    * @param {Address} deployer - The address of the deployer
-   * @param {?ReadParams<typeof boostRegistryAbi, 'getClones'>} [params]
-   * @returns {Promise<Address[]>} - The list of deployed clones for the given deployer
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Hex[]>} - The list of deployed clones for the given deployer
    */
   public async getClones(
     deployer: Address,
     params?: ReadParams<typeof boostRegistryAbi, 'getClones'>,
   ) {
-    return readBoostRegistryGetClones(this._config, {
-      address: this.assertValidAddress(),
+    return await readBoostRegistryGetClones(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [deployer],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -382,7 +513,7 @@ export class BoostRegistry extends Deployable<
    * @param {Address} base - The address of the base implementation
    * @param {Address} deployer - The address of the deployer
    * @param {string} displayName - The display name of the clone
-   * @param {?ReadParams<typeof boostRegistryAbi, 'getCloneIdentifier'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<Hex>} - The unique identifier for the clone
    */
   public async getCloneIdentifier(
@@ -392,8 +523,12 @@ export class BoostRegistry extends Deployable<
     displayName: string,
     params?: ReadParams<typeof boostRegistryAbi, 'getCloneIdentifier'>,
   ) {
-    return readBoostRegistryGetCloneIdentifier(this._config, {
-      address: this.assertValidAddress(),
+    return await readBoostRegistryGetCloneIdentifier(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [registryType, base, deployer, displayName],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -408,7 +543,7 @@ export class BoostRegistry extends Deployable<
    * @async
    * @param {RegistryType} registryType - The base type for the implementation
    * @param {string} displayName - The name of the implementation
-   * @param {?ReadParams<typeof boostRegistryAbi, 'getIdentifier'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<Hex>} - The unique identifier for the implementation
    */
   public async getIdentifier(
@@ -416,8 +551,12 @@ export class BoostRegistry extends Deployable<
     displayName: string,
     params?: ReadParams<typeof boostRegistryAbi, 'getIdentifier'>,
   ) {
-    return readBoostRegistryGetCloneIdentifier(this._config, {
-      address: this.assertValidAddress(),
+    return await readBoostRegistryGetCloneIdentifier(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [registryType, displayName],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally

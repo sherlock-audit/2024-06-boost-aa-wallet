@@ -1,13 +1,15 @@
 import { aBudgetAbi } from '@boostxyz/evm';
+import { AManagedBudget } from '@boostxyz/evm/deploys/componentInterfaces.json';
 import { readContract } from '@wagmi/core';
 import type { Address, Hex } from 'viem';
 import type { DeployableOptions } from '../Deployable/Deployable';
 import { InvalidComponentInterfaceError } from '../errors';
 import { ManagedBudget } from './ManagedBudget';
-import { SimpleBudget } from './SimpleBudget';
-import { VestingBudget } from './VestingBudget';
 
-export { SimpleBudget, VestingBudget, ManagedBudget };
+export {
+  // VestingBudget,
+  ManagedBudget,
+};
 
 /**
  * A union type representing all valid protocol Budget implementations
@@ -15,17 +17,17 @@ export { SimpleBudget, VestingBudget, ManagedBudget };
  * @export
  * @typedef {Budget}
  */
-export type Budget = SimpleBudget | VestingBudget | ManagedBudget;
+export type Budget = ManagedBudget; // | VestingBudget
 
 /**
  * A map of Budget component interfaces to their constructors.
  *
- * @type {{ "0x7aded85d": typeof VestingBudget; "0x0f2a5d52": typeof SimpleBudget; "0x0596908b": typeof SimpleBudget; }}
+ * @type {{ "0xa0109882": typeof ManagedBudget; }}
  */
 export const BudgetByComponentInterface = {
-  ['0x7aded85d']: VestingBudget,
-  ['0x0f2a5d52']: SimpleBudget,
-  ['0x0596908b']: ManagedBudget,
+  // ['0x64683da1']: VestingBudget,
+  // ['0x2929d19c']: SimpleBudget,
+  [AManagedBudget as Hex]: ManagedBudget,
 };
 
 /**
@@ -35,7 +37,7 @@ export const BudgetByComponentInterface = {
  * @async
  * @param {DeployableOptions} options
  * @param {Address} address
- * @returns {Promise<VestingBudget | SimpleBudget>}
+ * @returns {Promise<ManagedBudget>}
  * @throws {@link InvalidComponentInterfaceError}
  */
 export async function budgetFromAddress(
@@ -51,7 +53,7 @@ export async function budgetFromAddress(
   if (!Ctor) {
     throw new InvalidComponentInterfaceError(
       Object.keys(BudgetByComponentInterface) as Hex[],
-      interfaceId,
+      interfaceId as Hex,
     );
   }
   return new Ctor(options, address);

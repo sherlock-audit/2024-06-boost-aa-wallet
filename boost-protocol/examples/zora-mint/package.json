@@ -1,0 +1,17 @@
+{
+  "name": "zora-mint",
+  "private": true,
+  "version": "1.0.1-alpha.3",
+  "scripts": {
+    "test": "npx vitest",
+    "test:ci": "CI=true npx vitest"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@boostxyz/sdk": "workspace:*",
+    "@boostxyz/signatures": "workspace:*",
+    "@boostxyz/test": "workspace:*"
+  }
+}

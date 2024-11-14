@@ -5,20 +5,20 @@ import {
   type Fixtures,
   defaultOptions,
   deployFixtures,
-} from '../../test/helpers';
+} from '@boostxyz/test/helpers';
 import { SimpleDenyList } from './SimpleDenyList';
 
 let fixtures: Fixtures;
 
 beforeAll(async () => {
-  fixtures = await loadFixture(deployFixtures);
+  fixtures = await loadFixture(deployFixtures(defaultOptions));
 });
 
 function freshDenyList(fixtures: Fixtures) {
   return function freshDenyList() {
-    return fixtures.registry.clone(
+    return fixtures.registry.initialize(
       crypto.randomUUID(),
-      new fixtures.bases.SimpleDenyList(defaultOptions, {
+      fixtures.core.SimpleDenyList({
         owner: defaultOptions.account.address,
         denied: [defaultOptions.account.address],
       }),
