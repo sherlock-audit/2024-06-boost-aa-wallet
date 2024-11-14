@@ -12,6 +12,8 @@ import {BoostError} from "contracts/shared/BoostError.sol";
 import {AManagedBudget} from "contracts/budgets/AManagedBudget.sol";
 import {ABudget} from "contracts/budgets/ABudget.sol";
 import {ACloneable} from "contracts/shared/ACloneable.sol";
+import {AIncentive} from "contracts/incentives/AIncentive.sol";
+import {IClaw} from "contracts/shared/IClaw.sol";
 
 /// @title Managed ABudget
 /// @notice A minimal budget implementation with RBAC that simply holds and distributes tokens (ERC20-like and native)
@@ -96,13 +98,15 @@ contract ManagedBudget is AManagedBudget, ReentrancyGuard {
     /// @dev Only admins can directly reclaim assets from the budget
     /// @dev If the amount is zero, the entire balance of the asset will be transferred to the receiver
     /// @dev If the asset transfer fails, the reclamation will revert
-    function clawback(bytes calldata data_) external virtual override onlyOwnerOrRoles(ADMIN_ROLE) returns (bool) {
+    function clawback(bytes calldata data_) external virtual override onlyOwnerOrRoles(ADMIN_ROLE) returns (uint256) {
         Transfer memory request = abi.decode(data_, (Transfer));
+        uint256 amount = 0;
         if (request.assetType == AssetType.ETH || request.assetType == AssetType.ERC20) {
             FungiblePayload memory payload = abi.decode(request.data, (FungiblePayload));
             _transferFungible(
                 request.asset, request.target, payload.amount == 0 ? available(request.asset) : payload.amount
             );
+            amount = payload.amount;
         } else if (request.assetType == AssetType.ERC1155) {
             ERC1155Payload memory payload = abi.decode(request.data, (ERC1155Payload));
             _transferERC1155(
@@ -112,11 +116,27 @@ contract ManagedBudget is AManagedBudget, ReentrancyGuard {
                 payload.amount == 0 ? IERC1155(request.asset).balanceOf(address(this), payload.tokenId) : payload.amount,
                 payload.data
             );
+            amount = payload.amount;
         } else {
-            return false;
+            return amount;
         }
 
-        return true;
+        return amount;
+    }
+
+    /// @inheritdoc ABudget
+    function clawbackFromTarget(address target, bytes calldata data_, uint256 boostId, uint256 incentiveId)
+        external
+        virtual
+        override
+        onlyAuthorized
+        returns (uint256, address)
+    {
+        AIncentive.ClawbackPayload memory payload = AIncentive.ClawbackPayload({target: address(this), data: data_});
+        IClaw incentive = IClaw(target);
+        (uint256 amount, address asset) = incentive.clawback(abi.encode(payload), boostId, incentiveId);
+        _distributedFungible[asset] -= amount;
+        return (amount, asset);
     }
 
     /// @inheritdoc ABudget
@@ -124,13 +144,7 @@ contract ManagedBudget is AManagedBudget, ReentrancyGuard {
     /// @param data_ The packed {Transfer} request
     /// @return True if the disbursement was successful
     /// @dev If the asset transfer fails, the disbursement will revert
-    function disburse(bytes calldata data_)
-        public
-        virtual
-        override
-        onlyOwnerOrRoles(ADMIN_ROLE | MANAGER_ROLE)
-        returns (bool)
-    {
+    function disburse(bytes calldata data_) public virtual override onlyAuthorized returns (bool) {
         Transfer memory request = abi.decode(data_, (Transfer));
         if (request.assetType == AssetType.ERC20 || request.assetType == AssetType.ETH) {
             FungiblePayload memory payload = abi.decode(request.data, (FungiblePayload));
@@ -139,7 +153,7 @@ contract ManagedBudget is AManagedBudget, ReentrancyGuard {
             if (payload.amount > avail) {
                 revert InsufficientFunds(request.asset, avail, payload.amount);
             }
-
+            _distributedFungible[request.asset] += payload.amount;
             _transferFungible(request.asset, request.target, payload.amount);
         } else if (request.assetType == AssetType.ERC1155) {
             ERC1155Payload memory payload = abi.decode(request.data, (ERC1155Payload));
@@ -167,67 +181,6 @@ contract ManagedBudget is AManagedBudget, ReentrancyGuard {
         }
 
         return true;
-    }
-
-    /// @inheritdoc ABudget
-    /// @dev Checks if account has any level of authorization
-    function isAuthorized(address account_) public view virtual override returns (bool) {
-        return owner() == account_ || hasAnyRole(account_, MANAGER_ROLE | ADMIN_ROLE);
-    }
-
-    /// @inheritdoc ABudget
-    /// @dev If authorization is true, grant manager role, otherwise revoke manager role.
-    function setAuthorized(address[] calldata accounts_, bool[] calldata authorized_)
-        external
-        virtual
-        override
-        onlyOwnerOrRoles(ADMIN_ROLE)
-    {
-        if (accounts_.length != authorized_.length) {
-            revert BoostError.LengthMismatch();
-        }
-        for (uint256 i = 0; i < accounts_.length; i++) {
-            bool authorization = authorized_[i];
-            if (authorization == true) {
-                _grantRoles(accounts_[i], MANAGER_ROLE);
-            } else {
-                _removeRoles(accounts_[i], MANAGER_ROLE);
-            }
-        }
-    }
-
-    /// @notice Set roles for accounts authoried to use the budget
-    /// @param accounts_ The accounts to assign the corresponding role by index
-    /// @param roles_ The roles to assign
-    function grantRoles(address[] calldata accounts_, uint256[] calldata roles_)
-        external
-        virtual
-        override
-        onlyOwnerOrRoles(ADMIN_ROLE)
-    {
-        if (accounts_.length != roles_.length) {
-            revert BoostError.LengthMismatch();
-        }
-        for (uint256 i = 0; i < accounts_.length; i++) {
-            _grantRoles(accounts_[i], roles_[i]);
-        }
-    }
-
-    /// @notice Revoke roles for accounts authoried to use the budget
-    /// @param accounts_ The accounts to assign the corresponding role by index
-    /// @param roles_ The roles to remove
-    function revokeRoles(address[] calldata accounts_, uint256[] calldata roles_)
-        external
-        virtual
-        override
-        onlyOwnerOrRoles(ADMIN_ROLE)
-    {
-        if (accounts_.length != roles_.length) {
-            revert BoostError.LengthMismatch();
-        }
-        for (uint256 i = 0; i < accounts_.length; i++) {
-            _removeRoles(accounts_[i], roles_[i]);
-        }
     }
 
     /// @inheritdoc ABudget
@@ -299,9 +252,6 @@ contract ManagedBudget is AManagedBudget, ReentrancyGuard {
         if (amount_ > available(asset_)) {
             revert InsufficientFunds(asset_, available(asset_), amount_);
         }
-
-        _distributedFungible[asset_] += amount_;
-
         // Transfer the asset to the recipient
         if (asset_ == address(0)) {
             SafeTransferLib.safeTransferETH(to_, amount_);

@@ -1,4 +1,5 @@
 import {
+  readSimpleAllowListOwner,
   readSimpleDenyListIsAllowed,
   simpleDenyListAbi,
   simulateSimpleDenyListSetDenied,
@@ -10,26 +11,47 @@ import {
   type Address,
   type ContractEventName,
   type Hex,
+  encodeAbiParameters,
   zeroAddress,
   zeroHash,
 } from 'viem';
+import { SimpleDenyList as SimpleDenyListBases } from '../../dist/deployments.json';
 import type {
   DeployableOptions,
   GenericDeployableParams,
 } from '../Deployable/Deployable';
-import { DeployableTarget } from '../Deployable/DeployableTarget';
+import { DeployableTargetWithRBAC } from '../Deployable/DeployableTargetWithRBAC';
 import { DeployableUnknownOwnerProvidedError } from '../errors';
 import {
   type GenericLog,
   type ReadParams,
   RegistryType,
-  type SimpleDenyListPayload,
   type WriteParams,
-  prepareSimpleDenyListPayload,
 } from '../utils';
 
 export { simpleDenyListAbi };
-export type { SimpleDenyListPayload };
+
+/**
+ * Object representation of a {@link SimpleDenyList} initialization payload.
+ *
+ * @export
+ * @interface SimpleDenyListPayload
+ * @typedef {SimpleDenyListPayload}
+ */
+export interface SimpleDenyListPayload {
+  /**
+   * The allow list's owner
+   *
+   * @type {Address}
+   */
+  owner: Address;
+  /**
+   * List of denied addresses.
+   *
+   * @type {Address[]}
+   */
+  denied: Address[];
+}
 
 /**
  * A generic `viem.Log` event with support for `SimpleDenyList` event types.
@@ -52,10 +74,12 @@ export type SimpleDenyListLog<
  * @export
  * @class SimpleDenyList
  * @typedef {SimpleDenyList}
- * @extends {DeployableTarget<SimpleDenyListPayload>}
+ * @extends {DeployableTargetWithRBAC<SimpleDenyListPayload>}
  */
-export class SimpleDenyList extends DeployableTarget<
-  SimpleDenyListPayload,
+export class SimpleDenyList<
+  Payload = SimpleDenyListPayload,
+> extends DeployableTargetWithRBAC<
+  Payload | undefined,
   typeof simpleDenyListAbi
 > {
   public override readonly abi = simpleDenyListAbi;
@@ -64,10 +88,12 @@ export class SimpleDenyList extends DeployableTarget<
    *
    * @public
    * @static
-   * @type {Address}
+   * @type {Record<number, Address>}
    */
-  public static override base: Address = import.meta.env
-    .VITE_SIMPLE_DENYLIST_BASE;
+  public static override bases: Record<number, Address> = {
+    31337: import.meta.env.VITE_SIMPLE_DENYLIST_BASE,
+    ...(SimpleDenyListBases as Record<number, Address>),
+  };
   /**
    * @inheritdoc
    *
@@ -78,12 +104,32 @@ export class SimpleDenyList extends DeployableTarget<
   public static override registryType: RegistryType = RegistryType.ALLOW_LIST;
 
   /**
+   * Retrieves the owner
+   *
+   * @public
+   * @async
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>} - The address of the owner
+   */
+  public async owner(
+    params?: ReadParams<typeof simpleDenyListAbi, 'owner'>,
+  ): Promise<Address> {
+    return await readSimpleAllowListOwner(this._config, {
+      ...this.optionallyAttachAccount(),
+      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
+      ...(params as any),
+      address: this.assertValidAddress(),
+      args: [],
+    });
+  }
+
+  /**
    * Check if a user is authorized (i.e. not denied)
    *
    * @public
    * @async
    * @param {Address} address - The address of the user
-   * @param {?ReadParams<typeof simpleDenyListAbi, 'isAllowed'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<boolean>} - True if the user is authorized
    */
   public async isAllowed(
@@ -106,15 +152,17 @@ export class SimpleDenyList extends DeployableTarget<
    * @async
    * @param {Address[]} addresses - The list of users to update
    * @param {boolean[]} allowed - The denied status of each user
-   * @param {?WriteParams<typeof simpleDenyListAbi, 'setDenied'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<void>}
    */
   public async setDenied(
     addresses: Address[],
     allowed: boolean[],
     params?: WriteParams<typeof simpleDenyListAbi, 'setDenied'>,
   ) {
-    return this.awaitResult(this.setDeniedRaw(addresses, allowed, params));
+    return await this.awaitResult(
+      this.setDeniedRaw(addresses, allowed, params),
+    );
   }
 
   /**
@@ -124,8 +172,8 @@ export class SimpleDenyList extends DeployableTarget<
    * @async
    * @param {Address[]} addresses - The list of users to update
    * @param {boolean[]} allowed - The denied status of each user
-   * @param {?WriteParams<typeof simpleDenyListAbi, 'setDenied'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: void; }>}
    */
   public async setDeniedRaw(
     addresses: Address[],
@@ -146,111 +194,6 @@ export class SimpleDenyList extends DeployableTarget<
     return { hash, result };
   }
 
-  // /**
-  //  * A typed wrapper for (viem.getLogs)[https://viem.sh/docs/actions/public/getLogs#getlogs].
-  //  * Accepts `eventName` and `eventNames` as optional parameters to narrow the returned log types.
-  //  * @example
-  //  * ```ts
-  //  * const logs = contract.getLogs({ eventName: 'EventName' })
-  //  * const logs = contract.getLogs({ eventNames: ['EventName'] })
-  //  * ```
-  //  * @public
-  //  * @async
-  //  * @template {ContractEventName<typeof simpleDenyListAbi>} event
-  //  * @template {ExtractAbiEvent<
-  //  *       typeof simpleDenyListAbi,
-  //  *       event
-  //  *     >} [abiEvent=ExtractAbiEvent<typeof simpleDenyListAbi, event>]
-  //  * @param {?Omit<
-  //  *       GetLogsParams<typeof simpleDenyListAbi, event, abiEvent, abiEvent[]>,
-  //  *       'event' | 'events'
-  //  *     > & {
-  //  *       eventName?: event;
-  //  *       eventNames?: event[];
-  //  *     }} [params]
-  //  * @returns {Promise<GetLogsReturnType<abiEvent, abiEvent[]>>}
-  //  */
-  // public async getLogs<
-  //   event extends ContractEventName<typeof simpleDenyListAbi>,
-  //   const abiEvent extends ExtractAbiEvent<
-  //     typeof simpleDenyListAbi,
-  //     event
-  //   > = ExtractAbiEvent<typeof simpleDenyListAbi, event>,
-  // >(
-  //   params?: Omit<
-  //     GetLogsParams<typeof simpleDenyListAbi, event, abiEvent, abiEvent[]>,
-  //     'event' | 'events'
-  //   > & {
-  //     eventName?: event;
-  //     eventNames?: event[];
-  //   },
-  // ): Promise<GetLogsReturnType<abiEvent, abiEvent[]>> {
-  //   return getLogs(this._config.getClient({ chainId: params?.chainId }), {
-  //     // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wag
-  //     ...(params as any),
-  //     ...(params?.eventName
-  //       ? {
-  //           event: getAbiItem({
-  //             abi: simpleDenyListAbi,
-  //             name: params.eventName,
-  //             // biome-ignore lint/suspicious/noExplicitAny: awkward abi intersection issue
-  //           } as any),
-  //         }
-  //       : {}),
-  //     ...(params?.eventNames
-  //       ? {
-  //           events: params.eventNames.map((name) =>
-  //             getAbiItem({
-  //               abi: simpleDenyListAbi,
-  //               name,
-  //               // biome-ignore lint/suspicious/noExplicitAny: awkward abi intersection issue
-  //             } as any),
-  //           ),
-  //         }
-  //       : {}),
-  //     address: this.assertValidAddress(),
-  //   });
-  // }
-
-  // /**
-  //  * A typed wrapper for `wagmi.watchContractEvent`
-  //  *
-  //  * @public
-  //  * @async
-  //  * @template {ContractEventName<typeof simpleDenyListAbi>} event
-  //  * @param {(log: SimpleDenyListLog<event>) => unknown} cb
-  //  * @param {?WatchParams<typeof simpleDenyListAbi, event> & {
-  //  *       eventName?: event;
-  //  *     }} [params]
-  //  * @returns {unknown, params?: any) => unknown} Unsubscribe function
-  //  */
-  // public async subscribe<
-  //   event extends ContractEventName<typeof simpleDenyListAbi>,
-  // >(
-  //   cb: (log: SimpleDenyListLog<event>) => unknown,
-  //   params?: WatchParams<typeof simpleDenyListAbi, event> & {
-  //     eventName?: event;
-  //   },
-  // ) {
-  //   return watchContractEvent<
-  //     typeof this._config,
-  //     (typeof this._config)['chains'][number]['id'],
-  //     typeof simpleDenyListAbi,
-  //     event
-  //   >(this._config, {
-  //     // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-  //     ...(params as any),
-  //     eventName: params?.eventName,
-  //     abi: simpleDenyListAbi,
-  //     address: this.assertValidAddress(),
-  //     onLogs: (logs) => {
-  //       for (let l of logs) {
-  //         cb(l as unknown as SimpleDenyListLog<event>);
-  //       }
-  //     },
-  //   });
-  // }
-
   /**
    * @inheritdoc
    *
@@ -260,13 +203,11 @@ export class SimpleDenyList extends DeployableTarget<
    * @returns {GenericDeployableParams}
    */
   public override buildParameters(
-    _payload?: SimpleDenyListPayload,
+    _payload?: Payload,
     _options?: DeployableOptions,
   ): GenericDeployableParams {
-    const [payload, options] = this.validateDeploymentConfig(
-      _payload,
-      _options,
-    );
+    const [p, options] = this.validateDeploymentConfig(_payload, _options);
+    const payload = p as SimpleDenyListPayload;
     if (!payload.owner || payload.owner === zeroAddress) {
       const owner = options.account
         ? options.account.address
@@ -286,4 +227,25 @@ export class SimpleDenyList extends DeployableTarget<
       ...this.optionallyAttachAccount(options.account),
     };
   }
+}
+
+/**
+ * Given a {@link SimpleDenyListPayload}, properly encode the initialization payload.
+ *
+ * @param {SimpleDenyListPayload} param0
+ * @param {Address} param0.owner - The allow list's owner
+ * @param {Address[]} param0.denied - List of denied addresses.
+ * @returns {Hex}
+ */
+export function prepareSimpleDenyListPayload({
+  owner,
+  denied,
+}: SimpleDenyListPayload) {
+  return encodeAbiParameters(
+    [
+      { type: 'address', name: 'owner' },
+      { type: 'address[]', name: 'denied' },
+    ],
+    [owner, denied],
+  );
 }

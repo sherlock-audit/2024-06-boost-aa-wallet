@@ -8,24 +8,37 @@ import {
   writeErc721MintActionValidate,
 } from '@boostxyz/evm';
 import { bytecode } from '@boostxyz/evm/artifacts/contracts/actions/ERC721MintAction.sol/ERC721MintAction.json';
-import type { Address, ContractEventName, Hex } from 'viem';
+import {
+  type Address,
+  type ContractEventName,
+  type Hex,
+  encodeAbiParameters,
+  toHex,
+} from 'viem';
 import type {
   DeployableOptions,
   GenericDeployableParams,
 } from '../Deployable/Deployable';
 import {
-  type ERC721MintActionPayload,
   type GenericLog,
   type ReadParams,
   RegistryType,
   type WriteParams,
-  prepareERC721MintActionPayload,
-  prepareERC721MintActionValidate,
 } from '../utils';
-import { ContractAction } from './ContractAction';
+import {
+  ContractAction,
+  type ContractActionPayload,
+  prepareContractActionPayload,
+} from './ContractAction';
 
-export { erc721MintActionAbi, prepareERC721MintActionPayload };
-export type { ERC721MintActionPayload };
+export { erc721MintActionAbi };
+/**
+ * `ERC721MintActionPayload` is a re-exported `ContractActionPayload`
+ *
+ * @export
+ * @typedef {ERC721MintActionPayload}
+ */
+export type ERC721MintActionPayload = ContractActionPayload;
 
 /**
  * A generic `viem.Log` event with support for `ERC721MintAction` event types.
@@ -64,10 +77,9 @@ export class ERC721MintAction extends ContractAction<
    *
    * @public
    * @static
-   * @type {Address}
+   * @type {Record<number, Address>}
    */
-  public static override base: Address = import.meta.env
-    .VITE_ERC721_MINT_ACTION_BASE;
+  public static override bases: Record<number, Address> = {};
   /**
    * @inheritdoc
    *
@@ -84,14 +96,14 @@ export class ERC721MintAction extends ContractAction<
    * @public
    * @async
    * @param {bigint} token
-   * @param {?ReadParams<typeof erc721MintActionAbi, 'validated'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<boolean>}
    */
   public async validated(
     token: bigint,
     params?: ReadParams<typeof erc721MintActionAbi, 'validated'>,
   ) {
-    return readErc721MintActionValidated(this._config, {
+    return await readErc721MintActionValidated(this._config, {
       address: this.assertValidAddress(),
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -106,14 +118,14 @@ export class ERC721MintAction extends ContractAction<
    * @public
    * @async
    * @param {Hex} data
-   * @param {?WriteParams<typeof erc721MintActionAbi, 'execute'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<readonly [boolean, `0x${string}`]>}
    */
   public override async execute(
     data: Hex,
     params?: WriteParams<typeof erc721MintActionAbi, 'execute'>,
   ) {
-    return this.awaitResult(this.executeRaw(data, params));
+    return await this.awaitResult(this.executeRaw(data, params));
   }
 
   /**
@@ -122,8 +134,8 @@ export class ERC721MintAction extends ContractAction<
    * @public
    * @async
    * @param {Hex} data
-   * @param {?WriteParams<typeof erc721MintActionAbi, 'execute'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: readonly [boolean, `0x${string}`]; }>}
    */
   public override async executeRaw(
     data: Hex,
@@ -149,14 +161,14 @@ export class ERC721MintAction extends ContractAction<
    * @public
    * @async
    * @param {Hex} data
-   * @param {?ReadParams<typeof erc721MintActionAbi, 'prepare'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<`0x${string}`>}
    */
   public override async prepare(
     data: Hex,
     params?: ReadParams<typeof erc721MintActionAbi, 'prepare'>,
   ) {
-    return readErc721MintActionPrepare(this._config, {
+    return await readErc721MintActionPrepare(this._config, {
       address: this.assertValidAddress(),
       args: [data],
       ...this.optionallyAttachAccount(),
@@ -166,34 +178,34 @@ export class ERC721MintAction extends ContractAction<
   }
 
   /**
-   * Validate that the action has been completed successfully
+   * Validate that the action has been completed successfully. This API is protected to prevent accidental signature burning.
    *
-   * @public
+   * @protected
    * @async
    * @param {Address} holder - The holder
    * @param {BigInt} tokenId - The token ID
-   * @param {?WriteParams<typeof erc721MintActionAbi, 'validate'>} [params]
-   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} - True if the action has been validated for the user
+   * @param {?WriteParams} [params]
+   * @returns {Promise<boolean>} - True if the action has been validated for the user
    */
-  public async validate(
+  protected async validate(
     holder: Address,
     tokenId: bigint,
     params?: WriteParams<typeof erc721MintActionAbi, 'validate'>,
   ) {
-    return this.awaitResult(this.validateRaw(holder, tokenId, params));
+    return await this.awaitResult(this.validateRaw(holder, tokenId, params));
   }
 
   /**
    * Validate that the action has been completed successfully
    *
-   * @public
+   * @protected
    * @async
    * @param {Address} holder - The holder
    * @param {BigInt} tokenId - The token ID
-   * @param {?WriteParams<typeof erc721MintActionAbi, 'validate'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} - True if the action has been validated for the user
    */
-  public async validateRaw(
+  protected async validateRaw(
     holder: Address,
     tokenId: bigint,
     params?: WriteParams<typeof erc721MintActionAbi, 'validate'>,
@@ -235,4 +247,45 @@ export class ERC721MintAction extends ContractAction<
       ...this.optionallyAttachAccount(options.account),
     };
   }
+}
+
+/**
+ * Encodes a payload to validate that an action has been completed successfully.
+ *
+ *
+ * @export
+ * @param {Address} holder - The holder address
+ * @param {bigint} payload - The token ID
+ * @returns {Hex} - The first 20 bytes of the payload will be the holder address and the remaining bytes must be an encoded token ID (uint256)
+ */
+export function prepareERC721MintActionValidate(
+  holder: Address,
+  payload: bigint,
+) {
+  return encodeAbiParameters(
+    [
+      { type: 'address', name: 'holder' },
+      { type: 'bytes', name: 'payload' },
+    ],
+    [holder, toHex(payload)],
+  );
+}
+
+/**
+ * Given a {@link ContractActionPayload}, properly encode a `ContractAction.InitPayload` for use with {@link ERC721MintAction} initialization.
+ *
+ * @param {ContractActionPayload} param0
+ * @param {bigint} param0.chainId - The chain ID on which the target exists
+ * @param {Address} param0.target - The target contract address
+ * @param {Hex} param0.selector - The selector for the function to be called
+ * @param {bigint} param0.value - The native token value to send with the function call
+ * @returns {Hex}
+ */
+export function prepareERC721MintActionPayload({
+  chainId,
+  target,
+  selector,
+  value,
+}: ContractActionPayload) {
+  return prepareContractActionPayload({ chainId, target, selector, value });
 }

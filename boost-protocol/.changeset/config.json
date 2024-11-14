@@ -3,14 +3,21 @@
   "changelog": [
     "@changesets/cli/changelog",
     {
-      "repo": "rabbitholegg/boost-protocol"
+      "repo": "boostxyz/boost-protocol"
     }
   ],
   "commit": false,
   "fixed": [],
   "linked": [],
-  "access": "restricted",
+  "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": []
+  "ignore": [
+    "@boostxyz/test",
+    "agora-vote",
+    "delegate-action",
+    "ens-register",
+    "swap-specific-dex",
+    "zora-mint"
+  ]
 }

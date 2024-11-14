@@ -10,7 +10,7 @@ import {OwnableRoles} from "@solady/auth/OwnableRoles.sol";
 import {MockERC20, MockERC721} from "contracts/shared/Mocks.sol";
 
 import {BoostCore} from "contracts/BoostCore.sol";
-import {BoostRegistry} from "contracts/BoostRegistry.sol";
+import {BoostRegistry, ABoostRegistry} from "contracts/BoostRegistry.sol";
 
 import {BoostError} from "contracts/shared/BoostError.sol";
 import {BoostLib} from "contracts/shared/BoostLib.sol";
@@ -33,7 +33,7 @@ import {ERC20VariableIncentive} from "contracts/incentives/ERC20VariableIncentiv
 
 import {AValidator} from "contracts/validators/AValidator.sol";
 
-contract EndToEndSigner is Test, OwnableRoles {
+contract EndToEndSignerValidator is Test, OwnableRoles {
     BoostRegistry public registry = new BoostRegistry();
     address fee_recipient = address(1);
     BoostCore public core = new BoostCore(registry, fee_recipient);
@@ -58,20 +58,20 @@ contract EndToEndSigner is Test, OwnableRoles {
         erc20.mint(address(this), 1000 ether);
 
         // "I can specify the action of 'Mint an NFT'" => ERC721MintAction
-        registry.register(BoostRegistry.RegistryType.ACTION, "ERC721MintAction", address(new ERC721MintAction()));
+        registry.register(ABoostRegistry.RegistryType.ACTION, "ERC721MintAction", address(new ERC721MintAction()));
 
         // "I can specify the incentive of '100 ERC20' with a max of 5 participants" => ERC20Incentive
         registry.register(
-            BoostRegistry.RegistryType.INCENTIVE, "ERC20VariableIncentive", address(new ERC20VariableIncentive())
+            ABoostRegistry.RegistryType.INCENTIVE, "ERC20VariableIncentive", address(new ERC20VariableIncentive())
         );
 
-        registry.register(BoostRegistry.RegistryType.VALIDATOR, "SignerValidator", address(new SignerValidator()));
+        registry.register(ABoostRegistry.RegistryType.VALIDATOR, "SignerValidator", address(new SignerValidator()));
 
         // "I can specify a list of allowed addresses" => SimpleAllowList
-        registry.register(BoostRegistry.RegistryType.ALLOW_LIST, "SimpleDenyList", address(new SimpleDenyList()));
+        registry.register(ABoostRegistry.RegistryType.ALLOW_LIST, "SimpleDenyList", address(new SimpleDenyList()));
 
-        // "I can create a budget" => SimpleBudget
-        registry.register(BoostRegistry.RegistryType.BUDGET, "ManagedBudget", address(new ManagedBudget()));
+        // "I can create a budget" => ManagedBudget
+        registry.register(ABoostRegistry.RegistryType.BUDGET, "ManagedBudget", address(new ManagedBudget()));
         _budget = _given_that_I_have_a_budget();
     }
 
@@ -120,9 +120,6 @@ contract EndToEndSigner is Test, OwnableRoles {
         // - Protocol Fee == 1,000 bps (custom fee) + 1,000 bps (base fee) = 2,000 bps = 20%
         assertEq(boost.protocolFee, 2_000);
 
-        // - Referral Fee == 500 bps (custom fee) + 1,000 bps (base fee) = 1,500 bps = 15%
-        assertEq(boost.referralFee, 1_500);
-
         // - Max Participants == 5
         assertEq(boost.maxParticipants, 5);
     }
@@ -155,7 +152,7 @@ contract EndToEndSigner is Test, OwnableRoles {
 
         // pass it into claimIncentive
         startHoax(claimer);
-        core.claimIncentive{value: core.claimFee()}(boostId, incentiveId, address(0), claimData);
+        core.claimIncentive(boostId, incentiveId, address(0), claimData);
 
         assertEq(erc20.balanceOf(claimer), claimAmount);
     }
@@ -166,7 +163,7 @@ contract EndToEndSigner is Test, OwnableRoles {
 
     function _given_that_I_have_a_budget() internal returns (ManagedBudget budget) {
         // 1. Let's find the budget implementation we want to use (this should be handled by the UI)
-        //   - In this case, we're using the registered SimpleBudget implementation
+        //   - In this case, we're using the registered ManagedBudget implementation
         //   - Budgets require an owner and a list of initially authorized addresses
         address[] memory authorized = new address[](1);
         authorized[0] = address(core);
@@ -178,10 +175,10 @@ contract EndToEndSigner is Test, OwnableRoles {
             payable(
                 address(
                     registry.deployClone(
-                        BoostRegistry.RegistryType.BUDGET,
+                        ABoostRegistry.RegistryType.BUDGET,
                         address(
                             registry.getBaseImplementation(
-                                registry.getIdentifier(BoostRegistry.RegistryType.BUDGET, "ManagedBudget")
+                                registry.getIdentifier(ABoostRegistry.RegistryType.BUDGET, "ManagedBudget")
                             )
                         ),
                         "My Managed ABudget",
@@ -199,7 +196,7 @@ contract EndToEndSigner is Test, OwnableRoles {
     function _when_I_allocate_assets_to_my_budget(ABudget budget) internal {
         // "When I allocate assets to my budget"
         // "And the asset is an ERC20 token"
-        erc20.approve(address(budget), 500 ether);
+        erc20.approve(address(budget), 600 ether);
         assertTrue(
             budget.allocate(
                 abi.encode(
@@ -207,15 +204,15 @@ contract EndToEndSigner is Test, OwnableRoles {
                         assetType: ABudget.AssetType.ERC20,
                         asset: address(erc20),
                         target: address(this),
-                        data: abi.encode(ABudget.FungiblePayload({amount: 500 ether}))
+                        data: abi.encode(ABudget.FungiblePayload({amount: 600 ether}))
                     })
                 )
             )
         );
 
         // "Then my budget's balance should reflect the transferred amount"
-        assertEq(erc20.balanceOf(address(budget)), 500 ether);
-        assertEq(budget.available(address(erc20)), 500 ether);
+        assertEq(erc20.balanceOf(address(budget)), 600 ether);
+        assertEq(budget.available(address(erc20)), 600 ether);
 
         // "When I allocate assets to my budget"
         // "And the asset is ETH"
@@ -258,13 +255,13 @@ contract EndToEndSigner is Test, OwnableRoles {
             isBase: true,
             instance: address(
                 registry.getBaseImplementation(
-                    registry.getIdentifier(BoostRegistry.RegistryType.INCENTIVE, "ERC20VariableIncentive")
+                    registry.getIdentifier(ABoostRegistry.RegistryType.INCENTIVE, "ERC20VariableIncentive")
                 )
             ),
             // "... of '5 ERC20'"
             //address asset_, uint256 reward_, uint256 limit_
             // reward (second param) is unused
-            parameters: abi.encode(erc20, rewardAmount, incentiveLimitAmount)
+            parameters: abi.encode(erc20, rewardAmount, incentiveLimitAmount, address(budget))
         });
 
         return core.createBoost(
@@ -281,7 +278,7 @@ contract EndToEndSigner is Test, OwnableRoles {
                             isBase: true,
                             instance: address(
                                 registry.getBaseImplementation(
-                                    registry.getIdentifier(BoostRegistry.RegistryType.ACTION, "ERC721MintAction")
+                                    registry.getIdentifier(ABoostRegistry.RegistryType.ACTION, "ERC721MintAction")
                                 )
                             ),
                             parameters: abi.encode(
@@ -298,7 +295,7 @@ contract EndToEndSigner is Test, OwnableRoles {
                             isBase: true,
                             instance: address(
                                 registry.getBaseImplementation(
-                                    registry.getIdentifier(BoostRegistry.RegistryType.VALIDATOR, "SignerValidator")
+                                    registry.getIdentifier(ABoostRegistry.RegistryType.VALIDATOR, "SignerValidator")
                                 )
                             ),
                             parameters: abi.encode(signers, address(core))
@@ -308,14 +305,13 @@ contract EndToEndSigner is Test, OwnableRoles {
                             isBase: true,
                             instance: address(
                                 registry.getBaseImplementation(
-                                    registry.getIdentifier(BoostRegistry.RegistryType.ALLOW_LIST, "SimpleDenyList")
+                                    registry.getIdentifier(ABoostRegistry.RegistryType.ALLOW_LIST, "SimpleDenyList")
                                 )
                             ),
                             parameters: abi.encode(address(this), denyList)
                         }),
                         incentives, // "I can specify the incentive..."
                         1_000, // "I can specify an additional protocol fee" => 1,000 bps == 10%
-                        500, // "I can specify an additional referral fee" => 500 bps == 5%
                         5, // "I can specify a maximum number of participants" => 5
                         address(1) // "I can specify the owner of the Boost" => address(1)
                     )

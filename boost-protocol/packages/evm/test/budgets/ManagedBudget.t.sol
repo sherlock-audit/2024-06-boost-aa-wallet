@@ -15,6 +15,7 @@ import {ABudget} from "contracts/budgets/ABudget.sol";
 import {ACloneable} from "contracts/shared/ACloneable.sol";
 import {ManagedBudget} from "contracts/budgets/ManagedBudget.sol";
 import {AManagedBudget} from "contracts/budgets/AManagedBudget.sol";
+import {AIncentive} from "contracts/incentives/AIncentive.sol";
 
 contract ManagedBudgetTest is Test, IERC1155Receiver {
     MockERC20 mockERC20;
@@ -232,7 +233,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         uint256 tokenId = 42;
         uint256 initialAmount = 100;
 
-        // Approve SimpleBudget to spend tokens
+        // Approve ManagedBudget to spend tokens
         mockERC1155.setApprovalForAll(address(managedBudget), true);
 
         // Prepare allocation data
@@ -268,7 +269,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
 
         // Reclaim 99 tokens from the budget
         data = _makeFungibleTransfer(ABudget.AssetType.ERC20, address(mockERC20), address(this), 99 ether);
-        assertTrue(managedBudget.clawback(data));
+        assertGt(managedBudget.clawback(data), 0);
 
         // Ensure the budget has 1 token left
         assertEq(managedBudget.available(address(mockERC20)), 1 ether);
@@ -282,7 +283,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
 
         // Reclaim 99 ETH from the budget
         data = _makeFungibleTransfer(ABudget.AssetType.ETH, address(0), address(1), 99 ether);
-        assertTrue(managedBudget.clawback(data));
+        assertGt(managedBudget.clawback(data), 0);
 
         // Ensure the budget has 1 ETH left
         assertEq(managedBudget.available(address(0)), 1 ether);
@@ -313,7 +314,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
                 data: abi.encode(ABudget.ERC1155Payload({tokenId: 42, amount: 99, data: ""}))
             })
         );
-        assertTrue(managedBudget.clawback(data));
+        assertGt(managedBudget.clawback(data), 0);
 
         // Ensure the budget has 1 of token ID 42 left
         assertEq(managedBudget.available(address(mockERC1155), 42), 1);
@@ -330,7 +331,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
 
         // Reclaim all tokens from the budget
         data = _makeFungibleTransfer(ABudget.AssetType.ERC20, address(mockERC20), address(this), 0);
-        assertTrue(managedBudget.clawback(data));
+        assertEq(managedBudget.clawback(data), 0);
 
         // Ensure the budget has no tokens left
         assertEq(managedBudget.available(address(mockERC20)), 0 ether);
@@ -413,7 +414,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.MANAGER_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         // Approve the budget to transfer tokens
         mockERC20.approve(address(managedBudget), 100 ether);
@@ -435,7 +436,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.ADMIN_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         // Approve the budget to transfer tokens
         mockERC20.approve(address(managedBudget), 100 ether);
@@ -466,6 +467,23 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
             abi.encodeWithSelector(ABudget.InsufficientFunds.selector, address(mockERC1155), uint256(100), uint256(101))
         );
         managedBudget.clawback(data);
+    }
+
+    function testClawbackFromTarget_Unauthorized() public {
+        // see EndToEndBasic.t.sol for a working call flow
+
+        // Approve the budget to transfer tokens
+        mockERC20.approve(address(managedBudget), 100 ether);
+
+        // Allocate 100 tokens to the budget
+        bytes memory data = _makeFungibleTransfer(ABudget.AssetType.ERC20, address(mockERC20), address(this), 100 ether);
+        managedBudget.allocate(data);
+        assertEq(managedBudget.available(address(mockERC20)), 100 ether);
+
+        data = hex"";
+        hoax(makeAddr("unauthorized caller"));
+        vm.expectRevert(BoostError.Unauthorized.selector);
+        managedBudget.clawbackFromTarget(makeAddr("fake incentive"), data, 0, 0);
     }
 
     ///////////////////////////
@@ -655,7 +673,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.MANAGER_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         // Approve the budget to transfer tokens
         mockERC20.approve(address(managedBudget), 100 ether);
@@ -676,7 +694,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.ADMIN_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         // Approve the budget to transfer tokens
         mockERC20.approve(address(managedBudget), 100 ether);
@@ -905,10 +923,10 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
     }
 
     ////////////////////////////////
-    // ManagedBudget.grantRoles //
+    // ManagedBudget.grantManyRoles //
     ////////////////////////////////
 
-    function testGrantRoles() public {
+    function testGrantManyRoles() public {
         // Ensure the budget authorizes an account
         address[] memory accounts = new address[](2);
         uint256[] memory authorized = new uint256[](2);
@@ -916,7 +934,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         authorized[0] = managedBudget.MANAGER_ROLE();
         accounts[1] = address(0xaaaa);
         authorized[1] = managedBudget.ADMIN_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
         assertTrue(managedBudget.hasAllRoles(address(0xc0ffee), managedBudget.MANAGER_ROLE()));
         assertTrue(
             managedBudget.hasAllRoles(address(0xaaaa), managedBudget.MANAGER_ROLE() & managedBudget.ADMIN_ROLE())
@@ -924,7 +942,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         assertFalse(managedBudget.isAuthorized(address(0xdeadbeef)));
     }
 
-    function testGrantRoles_NotOwner() public {
+    function testGrantManyRoles_NotOwner() public {
         // Ensure the budget does not authorize an account if not called by the owner
         address[] memory accounts = new address[](1);
         uint256[] memory authorized = new uint256[](1);
@@ -933,16 +951,16 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         vm.prank(address(0xdeadbeef));
 
         vm.expectRevert(BoostError.Unauthorized.selector);
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
     }
 
-    function testGrantRoles_Manager() public {
+    function testGrantManyRoles_Manager() public {
         // Ensure the budget does not authorize accounts when called by a manager
         address[] memory accounts = new address[](1);
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.MANAGER_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         address[] memory accounts_ = new address[](1);
         uint256[] memory authorized_ = new uint256[](1);
@@ -951,16 +969,16 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
 
         vm.prank(address(0xdeadbeef));
         vm.expectRevert(BoostError.Unauthorized.selector);
-        managedBudget.grantRoles(accounts_, authorized_);
+        managedBudget.grantManyRoles(accounts_, authorized_);
     }
 
-    function testGrantRoles_Admin() public {
+    function testGrantManyRoles_Admin() public {
         // Ensure the budget does not authorize accounts when called by a manager
         address[] memory accounts = new address[](1);
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.ADMIN_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         address[] memory accounts_ = new address[](1);
         uint256[] memory authorized_ = new uint256[](1);
@@ -968,22 +986,22 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         authorized_[0] = 1;
 
         vm.prank(address(0xdeadbeef));
-        managedBudget.grantRoles(accounts_, authorized_);
+        managedBudget.grantManyRoles(accounts_, authorized_);
     }
 
-    function testGrantRoles_LengthMismatch() public {
+    function testGrantManyRoles_LengthMismatch() public {
         address[] memory accounts = new address[](1);
         uint256[] memory authorized = new uint256[](2);
 
         vm.expectRevert(BoostError.LengthMismatch.selector);
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
     }
 
     ////////////////////////////////
-    // ManagedBudget.revokeRoles //
+    // ManagedBudget.revokeManyRoles //
     ////////////////////////////////
 
-    function testRevokeRoles() public {
+    function testRevokeManyRoles() public {
         // Ensure the budget authorizes an account
         address[] memory accounts = new address[](2);
         uint256[] memory authorized = new uint256[](2);
@@ -991,20 +1009,20 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         authorized[0] = managedBudget.MANAGER_ROLE();
         accounts[1] = address(0xaaaa);
         authorized[1] = managedBudget.ADMIN_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
         assertTrue(managedBudget.hasAllRoles(address(0xc0ffee), managedBudget.MANAGER_ROLE()));
         assertTrue(
             managedBudget.hasAllRoles(address(0xaaaa), managedBudget.MANAGER_ROLE() & managedBudget.ADMIN_ROLE())
         );
         assertFalse(managedBudget.isAuthorized(address(0xdeadbeef)));
-        managedBudget.revokeRoles(accounts, authorized);
+        managedBudget.revokeManyRoles(accounts, authorized);
         assertFalse(managedBudget.hasAllRoles(address(0xc0ffee), managedBudget.MANAGER_ROLE()));
         assertFalse(
             managedBudget.hasAnyRole(address(0xaaaa), managedBudget.ADMIN_ROLE() | managedBudget.MANAGER_ROLE())
         );
     }
 
-    function testRevokeRoles_NotOwner() public {
+    function testRevokeManyRoles_NotOwner() public {
         // Ensure the budget does not authorize an account if not called by the owner
         address[] memory accounts = new address[](1);
         uint256[] memory authorized = new uint256[](1);
@@ -1013,40 +1031,40 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
 
         vm.prank(address(0xdeadbeef));
         vm.expectRevert(BoostError.Unauthorized.selector);
-        managedBudget.revokeRoles(accounts, authorized);
+        managedBudget.revokeManyRoles(accounts, authorized);
     }
 
-    function testRevokeRoles_Manager() public {
+    function testRevokeManyRoles_Manager() public {
         // Ensure the budget does not authorize accounts when called by a manager
         address[] memory accounts = new address[](1);
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.MANAGER_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         vm.prank(address(0xdeadbeef));
         vm.expectRevert(BoostError.Unauthorized.selector);
-        managedBudget.revokeRoles(accounts, authorized);
+        managedBudget.revokeManyRoles(accounts, authorized);
     }
 
-    function testRevokeRoles_Admin() public {
+    function testRevokeManyRoles_Admin() public {
         // Ensure the budget does authorizes revocation when called by an admin
         address[] memory accounts = new address[](1);
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.ADMIN_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         vm.prank(address(0xdeadbeef));
-        managedBudget.revokeRoles(accounts, authorized);
+        managedBudget.revokeManyRoles(accounts, authorized);
     }
 
-    function testRevokeRoles_LengthMismatch() public {
+    function testRevokeManyRoles_LengthMismatch() public {
         address[] memory accounts = new address[](1);
         uint256[] memory authorized = new uint256[](2);
 
         vm.expectRevert(BoostError.LengthMismatch.selector);
-        managedBudget.revokeRoles(accounts, authorized);
+        managedBudget.revokeManyRoles(accounts, authorized);
     }
 
     ////////////////////////////////
@@ -1102,7 +1120,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         uint256[] memory authorized = new uint256[](1);
         accounts[0] = address(0xdeadbeef);
         authorized[0] = managedBudget.ADMIN_ROLE();
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         vm.prank(address(0xdeadbeef));
 
@@ -1155,7 +1173,7 @@ contract ManagedBudgetTest is Test, IERC1155Receiver {
         accounts[1] = address(0xb33f);
         authorized[1] = 2;
 
-        managedBudget.grantRoles(accounts, authorized);
+        managedBudget.grantManyRoles(accounts, authorized);
 
         assertTrue(managedBudget.isAuthorized(address(0xc0ffee)));
         assertTrue(managedBudget.isAuthorized(address(0xb33f)));

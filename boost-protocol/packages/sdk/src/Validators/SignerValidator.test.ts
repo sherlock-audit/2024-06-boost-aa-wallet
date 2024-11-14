@@ -1,15 +1,14 @@
-import { loadFixture } from '@nomicfoundation/hardhat-network-helpers';
-import { isAddress, pad } from 'viem';
-import { beforeAll, describe, expect, test } from 'vitest';
-import { accounts } from '../../test/accounts';
+import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
+import { isAddress, pad } from "viem";
+import { beforeAll, describe, expect, test } from "vitest";
+import { accounts } from "@boostxyz/test/accounts";
 import {
   type Fixtures,
   defaultOptions,
   deployFixtures,
-} from '../../test/helpers';
-import { testAccount } from '../../test/viem';
-import { prepareSignerValidatorClaimDataPayload } from '../utils';
-import { SignerValidator } from './SignerValidator';
+} from "@boostxyz/test/helpers";
+import { testAccount } from "@boostxyz/test/viem";
+import { SignerValidator } from "./SignerValidator";
 
 let fixtures: Fixtures;
 
@@ -17,9 +16,9 @@ function freshValidator(fixtures: Fixtures) {
   return function freshValidator() {
     // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
     const account = accounts.at(1)!.account;
-    return fixtures.registry.clone(
+    return fixtures.registry.initialize(
       crypto.randomUUID(),
-      new fixtures.bases.SignerValidator(defaultOptions, {
+      fixtures.core.SignerValidator({
         signers: [defaultOptions.account.address, account],
         validatorCaller: testAccount.address,
       }),
@@ -27,12 +26,12 @@ function freshValidator(fixtures: Fixtures) {
   };
 }
 
-describe('SignerValidator', () => {
+describe("SignerValidator", () => {
   beforeAll(async () => {
-    fixtures = await loadFixture(deployFixtures);
+    fixtures = await loadFixture(deployFixtures(defaultOptions));
   });
 
-  test('can successfully be deployed', async () => {
+  test("can successfully be deployed", async () => {
     const action = new SignerValidator(defaultOptions, {
       signers: [testAccount.address],
       validatorCaller: testAccount.address,
@@ -41,7 +40,7 @@ describe('SignerValidator', () => {
     expect(isAddress(action.assertValidAddress())).toBe(true);
   });
 
-  test('initializes successfully', async () => {
+  test("initializes successfully", async () => {
     const validator = await loadFixture(freshValidator(fixtures));
     expect(await validator.signers(defaultOptions.account.address)).toBe(true);
     // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
@@ -50,37 +49,34 @@ describe('SignerValidator', () => {
     expect(await validator.signers(accounts.at(2)!.account)).toBe(false);
   });
 
-  test('can validate hashes', async () => {
+  test("can validate hashes", async () => {
     const validator = await loadFixture(freshValidator(fixtures));
 
     // Define the input data
     const boostId = 5n;
-    const incentiveQuantity = 1;
     const incentiveId = 0n;
-    const claimant = '0x24582544C98a86eE59687c4D5B55D78f4FffA666';
-    const incentiveData = pad('0xdef456232173821931823712381232131391321934');
+    const claimant = "0x24582544C98a86eE59687c4D5B55D78f4FffA666";
+    const incentiveData = pad("0xdef456232173821931823712381232131391321934");
 
     // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
     const trustedSigner = accounts.at(0)!;
     // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
     const untrustedSigner = accounts.at(2)!;
 
-    const claimDataPayload = await prepareSignerValidatorClaimDataPayload({
+    const claimDataPayload = await validator.encodeClaimData({
       signer: trustedSigner,
       incentiveData,
       chainId: defaultOptions.config.chains[0].id,
-      validator: validator.assertValidAddress(),
-      incentiveQuantity,
+      incentiveQuantity: 1,
       claimant,
       boostId: boostId,
     });
 
-    const badClaimDataPayload = await prepareSignerValidatorClaimDataPayload({
+    const badClaimDataPayload = await validator.encodeClaimData({
       signer: untrustedSigner,
       incentiveData,
       chainId: defaultOptions.config.chains[0].id,
-      validator: validator.assertValidAddress(),
-      incentiveQuantity,
+      incentiveQuantity: 1,
       claimant,
       boostId: boostId,
     });
@@ -107,25 +103,24 @@ describe('SignerValidator', () => {
       expect(e).toBeInstanceOf(Error);
     }
   });
-  test('will not revalidate the same hash', async () => {
+
+  test("will not revalidate the same hash", async () => {
     const validator = await loadFixture(freshValidator(fixtures));
 
     // Define the input data
     const boostId = 5n;
-    const incentiveQuantity = 1;
     const incentiveId = 0n;
-    const claimant = '0x24582544C98a86eE59687c4D5B55D78f4FffA666';
-    const incentiveData = pad('0xdef456232173821931823712381232131391321934');
+    const claimant = "0x24582544C98a86eE59687c4D5B55D78f4FffA666";
+    const incentiveData = pad("0xdef456232173821931823712381232131391321934");
 
     // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
     const trustedSigner = accounts.at(0)!;
 
-    const claimDataPayload = await prepareSignerValidatorClaimDataPayload({
+    const claimDataPayload = await validator.encodeClaimData({
       signer: trustedSigner,
       incentiveData,
       chainId: defaultOptions.config.chains[0].id,
-      validator: validator.assertValidAddress(),
-      incentiveQuantity,
+      incentiveQuantity: 1,
       claimant,
       boostId: boostId,
     });
@@ -152,7 +147,7 @@ describe('SignerValidator', () => {
     }
   });
 
-  test('can set authorized', async () => {
+  test("can set authorized", async () => {
     const validator = await loadFixture(freshValidator(fixtures));
     // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
     const newSigner = accounts.at(2)!.account;

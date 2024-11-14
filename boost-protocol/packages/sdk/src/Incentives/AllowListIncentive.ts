@@ -11,26 +11,51 @@ import {
   writeAllowListIncentiveClaim,
 } from '@boostxyz/evm';
 import { bytecode } from '@boostxyz/evm/artifacts/contracts/incentives/AllowListIncentive.sol/AllowListIncentive.json';
-import type { Address, ContractEventName, Hex } from 'viem';
+import {
+  type Address,
+  type ContractEventName,
+  type Hex,
+  encodeAbiParameters,
+  zeroHash,
+} from 'viem';
+import { AllowListIncentive as AllowListIncentiveBases } from '../../dist/deployments.json';
 import { SimpleAllowList } from '../AllowLists/AllowList';
 import type {
   DeployableOptions,
   GenericDeployableParams,
 } from '../Deployable/Deployable';
 import { DeployableTarget } from '../Deployable/DeployableTarget';
+import { type ClaimPayload, prepareClaimPayload } from '../claiming';
 import {
-  type AllowListIncentivePayload,
-  type ClaimPayload,
   type GenericLog,
   type ReadParams,
   RegistryType,
   type WriteParams,
-  prepareAllowListIncentivePayload,
-  prepareClaimPayload,
 } from '../utils';
 
 export { allowListIncentiveAbi };
-export type { AllowListIncentivePayload };
+
+/**
+ * The object representation of a `AllowListIncentive.InitPayload`
+ *
+ * @export
+ * @interface AllowListIncentivePayload
+ * @typedef {AllowListIncentivePayload}
+ */
+export interface AllowListIncentivePayload {
+  /**
+   * The address to the allowlist to add claimers to.
+   *
+   * @type {Address}
+   */
+  allowList: Address;
+  /**
+   *  The maximum number of claims that can be made (one per address)
+   *
+   * @type {bigint}
+   */
+  limit: bigint;
+}
 
 /**
  * A generic `viem.Log` event with support for `AllowListIncentive` event types.
@@ -69,10 +94,12 @@ export class AllowListIncentive extends DeployableTarget<
    *
    * @public
    * @static
-   * @type {Address}
+   * @type {Record<number, Address>}
    */
-  public static override base: Address = import.meta.env
-    .VITE_ALLOWLIST_INCENTIVE_BASE;
+  public static override bases: Record<number, Address> = {
+    31337: import.meta.env.VITE_ALLOWLIST_INCENTIVE_BASE,
+    ...(AllowListIncentiveBases as Record<number, Address>),
+  };
   /**
    * @inheritdoc
    *
@@ -87,13 +114,13 @@ export class AllowListIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof allowListIncentiveAbi, 'owner'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>}
    */
   public async owner(
     params?: ReadParams<typeof allowListIncentiveAbi, 'owner'>,
   ) {
-    return readAllowListIncentiveOwner(this._config, {
+    return await readAllowListIncentiveOwner(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -106,13 +133,13 @@ export class AllowListIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof allowListIncentiveAbi, 'claims'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async claims(
     params?: ReadParams<typeof allowListIncentiveAbi, 'claims'>,
   ) {
-    return readAllowListIncentiveClaims(this._config, {
+    return await readAllowListIncentiveClaims(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -125,13 +152,13 @@ export class AllowListIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof allowListIncentiveAbi, 'reward'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async reward(
     params?: ReadParams<typeof allowListIncentiveAbi, 'reward'>,
   ) {
-    return readAllowListIncentiveReward(this._config, {
+    return await readAllowListIncentiveReward(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -145,14 +172,14 @@ export class AllowListIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {Address} address
-   * @param {?ReadParams<typeof allowListIncentiveAbi, 'claimed'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<boolean>}
    */
   public async claimed(
     address: Address,
     params?: ReadParams<typeof allowListIncentiveAbi, 'claimed'>,
   ) {
-    return readAllowListIncentiveClaimed(this._config, {
+    return await readAllowListIncentiveClaimed(this._config, {
       address: this.assertValidAddress(),
       args: [address],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -165,7 +192,7 @@ export class AllowListIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof allowListIncentiveAbi, 'allowList'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<SimpleAllowList>}
    */
   public async allowList(
@@ -187,13 +214,13 @@ export class AllowListIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof allowListIncentiveAbi, 'limit'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<bigint>}
    */
   public async limit(
     params?: ReadParams<typeof allowListIncentiveAbi, 'limit'>,
   ) {
-    return readAllowListIncentiveLimit(this._config, {
+    return await readAllowListIncentiveLimit(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -206,14 +233,14 @@ export class AllowListIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {Pick<ClaimPayload, 'target'>} payload
-   * @param {?WriteParams<typeof allowListIncentiveAbi, 'claim'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<true>} - return true if successful, otherwise revert
    */
-  public async claim(
+  protected async claim(
     payload: Pick<ClaimPayload, 'target'>,
     params?: WriteParams<typeof allowListIncentiveAbi, 'claim'>,
   ) {
-    return this.awaitResult(this.claimRaw(payload, params));
+    return await this.awaitResult(this.claimRaw(payload, params));
   }
 
   /**
@@ -222,10 +249,10 @@ export class AllowListIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {Pick<ClaimPayload, 'target'>} payload
-   * @param {?WriteParams<typeof allowListIncentiveAbi, 'claim'>} [params]
-   * @returns {Promise<true>} - return true if successful, otherwise revert
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} - return true if successful, otherwise revert
    */
-  public async claimRaw(
+  protected async claimRaw(
     payload: Pick<ClaimPayload, 'target'>,
     params?: WriteParams<typeof allowListIncentiveAbi, 'claim'>,
   ) {
@@ -249,14 +276,14 @@ export class AllowListIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {Pick<ClaimPayload, 'target'>} payload
-   * @param {?ReadParams<typeof allowListIncentiveAbi, 'isClaimable'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<boolean>} - True if the incentive is claimable based on the data payload
    */
   public async isClaimable(
     payload: Pick<ClaimPayload, 'target'>,
     params?: ReadParams<typeof allowListIncentiveAbi, 'isClaimable'>,
   ) {
-    return readAllowListIncentiveIsClaimable(this._config, {
+    return await readAllowListIncentiveIsClaimable(this._config, {
       address: this.assertValidAddress(),
       args: [prepareClaimPayload(payload)],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -287,4 +314,36 @@ export class AllowListIncentive extends DeployableTarget<
       ...this.optionallyAttachAccount(options.account),
     };
   }
+
+  /**
+   * Builds the claim data for the AllowListIncentive.
+   *
+   * @public
+   * @returns {Hash} A `zeroHash`, as AllowListIncentive doesn't require specific claim data.
+   * @description This function returns `zeroHash` because AllowListIncentive doesn't use any specific claim data.
+   */
+  public buildClaimData() {
+    return zeroHash;
+  }
 }
+
+/**
+ * Given a {@link AllowListIncentivePayload}, properly encode a `AllowListIncentive.InitPayload` for use with {@link AllowListIncentive} initialization.
+ *
+ * @param {AllowListIncentivePayload} param0
+ * @param {Address} param0.allowList - The address to the allowlist to add claimers to.
+ * @param {bigint} param0.limit -  The maximum number of claims that can be made (one per address)
+ * @returns {Hex}
+ */
+export const prepareAllowListIncentivePayload = ({
+  allowList,
+  limit,
+}: AllowListIncentivePayload) => {
+  return encodeAbiParameters(
+    [
+      { type: 'address', name: 'allowList' },
+      { type: 'uint256', name: 'limit' },
+    ],
+    [allowList, limit],
+  );
+};

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.24;
 
-import {Ownable as AOwnable} from "@solady/auth/Ownable.sol";
 import {SafeTransferLib} from "@solady/utils/SafeTransferLib.sol";
 
 import {ACloneable} from "contracts/shared/ACloneable.sol";
@@ -10,10 +9,11 @@ import {BoostError} from "contracts/shared/BoostError.sol";
 import {ABudget} from "contracts/budgets/ABudget.sol";
 import {ACGDAIncentive} from "contracts/incentives/ACGDAIncentive.sol";
 import {AIncentive} from "contracts/incentives/AIncentive.sol";
+import {RBAC} from "contracts/shared/RBAC.sol";
 
 /// @title Continuous Gradual Dutch Auction AIncentive
 /// @notice An ERC20 incentive implementation with reward amounts adjusting dynamically based on claim volume.
-contract CGDAIncentive is AOwnable, ACGDAIncentive {
+contract CGDAIncentive is RBAC, ACGDAIncentive {
     using SafeTransferLib for address;
 
     /// @notice The payload for initializing a CGDAIncentive
@@ -61,6 +61,7 @@ contract CGDAIncentive is AOwnable, ACGDAIncentive {
 
         totalBudget = init_.totalBudget;
         _initializeOwner(msg.sender);
+        _setRoles(msg.sender, MANAGER_ROLE);
     }
 
     /// @inheritdoc AIncentive
@@ -83,24 +84,32 @@ contract CGDAIncentive is AOwnable, ACGDAIncentive {
     /// @inheritdoc AIncentive
     /// @notice Claim the incentive
     function claim(address claimTarget, bytes calldata) external virtual override onlyOwner returns (bool) {
-        if (!_isClaimable(claimTarget)) revert NotClaimable();
+        if (!_isClaimable(claimTarget)) revert BoostError.ClaimFailed(claimTarget, hex"");
+        claimed[claimTarget] = true;
         claims++;
 
         // Calculate the current reward and update the state
-        uint256 reward = currentReward();
+        uint256 currentRewardAmount = currentReward();
         cgdaParams.lastClaimTime = block.timestamp;
-        cgdaParams.currentReward =
-            reward > cgdaParams.rewardDecay ? reward - cgdaParams.rewardDecay : cgdaParams.rewardDecay;
+        cgdaParams.currentReward = currentRewardAmount > cgdaParams.rewardDecay
+            ? currentRewardAmount - cgdaParams.rewardDecay
+            : cgdaParams.rewardDecay;
 
-        // Transfer the reward to the recipient
-        asset.safeTransfer(claimTarget, reward);
+        // Transfer the currentReward to the recipient
+        asset.safeTransfer(claimTarget, currentRewardAmount);
 
-        emit Claimed(claimTarget, abi.encodePacked(asset, claimTarget, reward));
+        emit Claimed(claimTarget, abi.encodePacked(asset, claimTarget, currentRewardAmount));
         return true;
     }
 
     /// @inheritdoc AIncentive
-    function clawback(bytes calldata data_) external virtual override onlyOwner returns (bool) {
+    function clawback(bytes calldata data_)
+        external
+        virtual
+        override
+        onlyRoles(MANAGER_ROLE)
+        returns (uint256, address)
+    {
         ClawbackPayload memory claim_ = abi.decode(data_, (ClawbackPayload));
         (uint256 amount) = abi.decode(claim_.data, (uint256));
 
@@ -108,7 +117,7 @@ contract CGDAIncentive is AOwnable, ACGDAIncentive {
         asset.safeTransfer(claim_.target, amount);
         emit Claimed(claim_.target, abi.encodePacked(asset, claim_.target, amount));
 
-        return true;
+        return (amount, asset);
     }
 
     /// @inheritdoc AIncentive

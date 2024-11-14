@@ -23,7 +23,10 @@ abstract contract AEventAction is AAction {
         NOT_EQUAL,
         GREATER_THAN,
         LESS_THAN,
-        CONTAINS
+        CONTAINS,
+        REGEX,
+        GREATER_THAN_OR_EQUAL,
+        LESS_THAN_OR_EQUAL
     }
 
     enum PrimitiveType {
@@ -37,15 +40,18 @@ abstract contract AEventAction is AAction {
     struct Criteria {
         FilterType filterType;
         PrimitiveType fieldType;
-        uint8 fieldIndex; // Where in the logs arg array the field is located
-        bytes filterData; // data fiels in case we need more complex filtering in the future - initially unused
+        // the parameter index in the event or function
+        uint8 fieldIndex;
+        // data fields in case we need more complex filtering; used with regex filters
+        bytes filterData;
     }
 
     struct ActionStep {
-        bytes4 signature;
+        bytes32 signature;
         SignatureType signatureType;
         uint8 actionType;
         address targetContract;
+        uint256 chainid;
         Criteria actionParameter;
     }
 
@@ -59,11 +65,13 @@ abstract contract AEventAction is AAction {
     /// @param signature The 4 byte signature of the event or function
     /// @param fieldIndex The index corresponding to claimant.
     /// @param targetContract The address of the target contract
+    /// @param chainId The id of the evm chain the Event was emitted from
     struct ActionClaimant {
         SignatureType signatureType;
-        bytes4 signature;
+        bytes32 signature;
         uint8 fieldIndex;
         address targetContract;
+        uint256 chainid;
     }
 
     function getActionStepsCount() public view virtual returns (uint256);

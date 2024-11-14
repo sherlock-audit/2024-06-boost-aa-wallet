@@ -1,7 +1,6 @@
 import {
   boostCoreAbi,
   type iAuthAbi,
-  readBoostCoreClaimFee,
   readBoostCoreCreateBoostAuth,
   readBoostCoreGetBoost,
   readBoostCoreGetBoostCount,
@@ -9,36 +8,39 @@ import {
   readBoostCoreProtocolFeeReceiver,
   readIAuthIsAuthorized,
   simulateBoostCoreClaimIncentive,
-  simulateBoostCoreSetClaimFee,
+  simulateBoostCoreClaimIncentiveFor,
+  simulateBoostCoreCreateBoost,
   simulateBoostCoreSetCreateBoostAuth,
   simulateBoostCoreSetProtocolFeeReceiver,
   writeBoostCoreClaimIncentive,
-  writeBoostCoreSetClaimFee,
+  writeBoostCoreClaimIncentiveFor,
   writeBoostCoreSetCreateBoostAuth,
   writeBoostCoreSetProtocolFeeReceiver,
 } from '@boostxyz/evm';
 import { bytecode } from '@boostxyz/evm/artifacts/contracts/BoostCore.sol/BoostCore.json';
-import { getAccount, waitForTransactionReceipt } from '@wagmi/core';
+import {
+  type GetTransactionReceiptParameters,
+  getAccount,
+  getChains,
+  getTransactionReceipt,
+  waitForTransactionReceipt,
+} from '@wagmi/core';
+import type { SimulateContractReturnType } from '@wagmi/core/actions';
 import { createWriteContract } from '@wagmi/core/codegen';
 import {
   type Address,
   type ContractEventName,
   type Hex,
+  parseEther,
   parseEventLogs,
   zeroAddress,
   zeroHash,
 } from 'viem';
+import { BoostCore as BoostCoreBases } from '../dist/deployments.json';
 import { type Action, actionFromAddress } from './Actions/Action';
-import {
-  ContractAction,
-  type ContractActionPayload,
-} from './Actions/ContractAction';
-import {
-  ERC721MintAction,
-  type ERC721MintActionPayload,
-} from './Actions/ERC721MintAction';
-import { EventAction } from './Actions/EventAction';
+import { EventAction, type EventActionPayload } from './Actions/EventAction';
 import { type AllowList, allowListFromAddress } from './AllowLists/AllowList';
+import { OpenAllowList } from './AllowLists/OpenAllowList';
 import {
   SimpleAllowList,
   type SimpleAllowListPayload,
@@ -48,17 +50,18 @@ import {
   type SimpleDenyListPayload,
 } from './AllowLists/SimpleDenyList';
 import { type Auth, PassthroughAuth } from './Auth/Auth';
-import { Boost } from './Boost';
+import {
+  Boost,
+  type BoostPayload,
+  type RawBoost,
+  type Target,
+  prepareBoostPayload,
+} from './Boost';
 import { type Budget, budgetFromAddress } from './Budgets/Budget';
 import {
   ManagedBudget,
   type ManagedBudgetPayload,
 } from './Budgets/ManagedBudget';
-import { SimpleBudget, type SimpleBudgetPayload } from './Budgets/SimpleBudget';
-import {
-  VestingBudget,
-  type VestingBudgetPayload,
-} from './Budgets/VestingBudget';
 import {
   Deployable,
   type DeployableOptions,
@@ -78,9 +81,10 @@ import {
   type ERC20IncentivePayload,
 } from './Incentives/ERC20Incentive';
 import {
-  ERC1155Incentive,
-  type ERC1155IncentivePayload,
-} from './Incentives/ERC1155Incentive';
+  ERC20VariableCriteriaIncentive,
+  type ERC20VariableCriteriaIncentivePayload,
+} from './Incentives/ERC20VariableCriteriaIncentive';
+import type { ERC20VariableIncentivePayload } from './Incentives/ERC20VariableIncentive';
 import {
   ERC20VariableIncentive,
   type Incentive,
@@ -91,37 +95,67 @@ import {
   type PointsIncentivePayload,
 } from './Incentives/PointsIncentive';
 import {
+  LimitedSignerValidator,
+  type LimitedSignerValidatorPayload,
+} from './Validators/LimitedSignerValidator';
+import {
   SignerValidator,
   type SignerValidatorPayload,
 } from './Validators/SignerValidator';
-import { type Validator, validatorFromAddress } from './Validators/Validator';
+import {
+  BoostValidatorEOA,
+  type Validator,
+  validatorFromAddress,
+} from './Validators/Validator';
 import {
   BoostCoreNoIdentifierEmitted,
+  BoostNotFoundError,
   BudgetMustAuthorizeBoostCore,
   DeployableUnknownOwnerProvidedError,
-  NoContractAddressUponReceiptError,
+  IncentiveNotCloneableError,
+  InvalidProtocolChainIdError,
+  MustInitializeBudgetError,
 } from './errors';
 import {
-  type ERC20VariableIncentivePayload,
-  type EventActionPayload,
   type GenericLog,
-  type BoostPayload as OnChainBoostPayload,
   type ReadParams,
-  type Target,
   type WriteParams,
-  prepareBoostPayload,
+  assertValidAddressByChainId,
 } from './utils';
 
+/**
+ * The ABI of the BoostCore contract, if needed for low level operations
+ *
+ * @type {typeof boostCoreAbi}
+ */
 export { boostCoreAbi };
 
 /**
- * The fixed address for the deployed Boost Core.
- * By default, `new BoostCore` will use this address if not otherwise provided.
+ * The fee (in wei) required to claim each incentive, must be provided for the `claimIncentive` transaction
+ *
+ * @type {bigint}
+ */
+export const BOOST_CORE_CLAIM_FEE = parseEther('0.000075');
+
+/**
+ * The fixed addresses for the deployed Boost Core.
+ * By default, `new BoostCore` will use the address deployed to the currently connected chain, or `BOOST_CORE_ADDRESS` if not provided.
+ *
+ * @type {Record<number, Address>}
+ */
+export const BOOST_CORE_ADDRESSES: Record<number, Address> = {
+  31337: import.meta.env.VITE_BOOST_CORE_ADDRESS,
+  ...(BoostCoreBases as Record<number, Address>),
+};
+
+/**
+ * The address of the deployed BoostCore instance. In prerelease mode, this will be its sepolia address
  *
  * @type {Address}
  */
-export const BOOST_CORE_ADDRESS: Address = import.meta.env
-  .VITE_BOOST_CORE_ADDRESS;
+export const BOOST_CORE_ADDRESS =
+  BOOST_CORE_ADDRESSES[__DEFAULT_CHAIN_ID__ as unknown as number] ||
+  zeroAddress;
 
 /**
  * A generic `viem.Log` event with support for `BoostCore` event types.
@@ -219,11 +253,10 @@ export type BoostCoreConfig =
 export type CreateBoostPayload = {
   budget: Budget;
   action: Action;
-  validator: Validator;
-  allowList: AllowList;
+  validator?: Validator;
+  allowList?: AllowList;
   incentives: Array<Incentive>;
   protocolFee?: bigint;
-  referralFee?: bigint;
   maxParticipants?: bigint;
   owner?: Address;
 };
@@ -240,6 +273,26 @@ export class BoostCore extends Deployable<
   [Address, Address],
   typeof boostCoreAbi
 > {
+  /**
+   * A static property representing a map of stringified chain ID's to the address of the deployed implementation on chain
+   *
+   * @static
+   * @readonly
+   * @type {Record<string, Address>}
+   */
+  static readonly addresses: Record<number, Address> = BOOST_CORE_ADDRESSES;
+
+  /**
+   * A getter that will return Boost core's static addresses by numerical chain ID
+   *
+   * @public
+   * @readonly
+   * @type {Record<number, Address>}
+   */
+  public get addresses(): Record<number, Address> {
+    return (this.constructor as typeof BoostCore).addresses;
+  }
+
   /**
    * Creates an instance of BoostCore.
    *
@@ -258,197 +311,58 @@ export class BoostCore extends Deployable<
         options.protocolFeeReceiver,
       ]);
     } else {
-      super({ account, config }, BOOST_CORE_ADDRESS);
+      const { address } = assertValidAddressByChainId(
+        config,
+        BOOST_CORE_ADDRESSES,
+      );
+      super({ account, config }, address);
     }
     //@ts-expect-error I can't set this property on the class because for some reason it takes super out of constructor scope?
     this.abi = boostCoreAbi;
-  } /**
+  }
+
+  /**
    * Create a new Boost.
+   *
    *
    * @public
    * @async
    * @param {CreateBoostPayload} _boostPayload
-   * @param {?DeployableOptions} [_options]
-   * @returns {Boost}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<Boost>}
    */
   public async createBoost(
     _boostPayload: CreateBoostPayload,
-    _options?: DeployableOptions,
+    _params?: WriteParams<typeof boostCoreAbi, 'createBoost'>,
   ) {
-    const coreAddress = this.assertValidAddress();
     const [payload, options] =
-      this.validateDeploymentConfig<CreateBoostPayload>(
-        _boostPayload,
-        _options,
-      );
-
-    let {
-      budget,
-      action,
-      validator,
-      allowList,
-      incentives,
-      protocolFee = 0n,
-      referralFee = 0n,
-      maxParticipants = 0n,
-      owner,
-    } = payload;
+      this.validateDeploymentConfig<CreateBoostPayload>(_boostPayload);
+    const desiredChainId = _params?.chain?.id || _params?.chainId;
+    const { chainId, address: coreAddress } = assertValidAddressByChainId(
+      options.config,
+      this.addresses,
+      desiredChainId,
+    );
 
     const boostFactory = createWriteContract({
       abi: boostCoreAbi,
       functionName: 'createBoost',
-      address: this.address,
+      address: coreAddress,
     });
 
-    if (!owner) {
-      owner =
-        this._account?.address ||
-        getAccount(options.config).address ||
-        zeroAddress;
-      if (owner === zeroAddress) {
-        throw new DeployableUnknownOwnerProvidedError();
-      }
-    }
-
-    let budgetPayload: OnChainBoostPayload['budget'] = zeroAddress;
-    if (budget.address) {
-      budgetPayload = budget.address;
-      if (!(await budget.isAuthorized(coreAddress))) {
-        throw new BudgetMustAuthorizeBoostCore(coreAddress);
-      }
-    } else {
-      // budgets are either instantiated with an address or payload, so in this branch payload will exist
-      const authorized = budget.payload?.authorized || [];
-      if (!authorized.includes(coreAddress)) {
-        throw new BudgetMustAuthorizeBoostCore(coreAddress);
-      }
-      const budgetHash = await budget.deployRaw(undefined, options);
-      const receipt = await waitForTransactionReceipt(options.config, {
-        hash: budgetHash,
-      });
-      if (!receipt.contractAddress)
-        throw new NoContractAddressUponReceiptError(receipt);
-      budgetPayload = receipt.contractAddress;
-    }
-
-    // if we're supplying an address, it could be a pre-initialized target
-    // if base is explicitly set to false, then it will not be initialized, and it will be referenced as is if it implements interface correctly
-    let actionPayload: OnChainBoostPayload['action'] = {
-      instance: zeroAddress,
-      isBase: true,
-      parameters: zeroHash,
-    };
-    if (action.address) {
-      const isBase = action.address === action.base || action.isBase;
-      actionPayload = {
-        isBase: isBase,
-        instance: action.address,
-        parameters: isBase
-          ? action.buildParameters(undefined, options).args.at(0) || zeroHash
-          : zeroHash,
-      };
-    } else {
-      actionPayload.parameters =
-        action.buildParameters(undefined, options).args.at(0) || zeroHash;
-      actionPayload.instance = action.base;
-    }
-
-    let validatorPayload: OnChainBoostPayload['validator'] = {
-      instance: zeroAddress,
-      isBase: true,
-      parameters: zeroHash,
-    };
-    if (validator.address) {
-      const isBase = validator.address === validator.base || validator.isBase;
-      validatorPayload = {
-        isBase: isBase,
-        instance: validator.address,
-        parameters: isBase
-          ? validator
-              .buildParameters(
-                {
-                  signers: [owner],
-                  validatorCaller: coreAddress,
-                },
-                options,
-              )
-              .args.at(0) || zeroHash
-          : zeroHash,
-      };
-    } else {
-      validatorPayload.parameters =
-        validator
-          .buildParameters(
-            {
-              signers: [owner],
-              validatorCaller: coreAddress,
-            },
-            options,
-          )
-          .args.at(0) || zeroHash;
-      validatorPayload.instance = validator.base;
-    }
-
-    let allowListPayload: OnChainBoostPayload['allowList'] = {
-      instance: zeroAddress,
-      isBase: true,
-      parameters: zeroHash,
-    };
-    if (allowList.address) {
-      const isBase = allowList.address === allowList.base || allowList.isBase;
-      allowListPayload = {
-        isBase: isBase,
-        instance: allowList.address,
-        parameters: isBase
-          ? zeroHash // allowList.buildParameters(undefined, options).args.at(0) || zeroHash
-          : zeroHash,
-      };
-    } else {
-      allowListPayload.parameters =
-        allowList.buildParameters(undefined, options).args.at(0) || zeroHash;
-      allowListPayload.instance = allowList.base;
-    }
-
-    let incentivesPayloads: Array<Target> = incentives.map(() => ({
-      instance: zeroAddress,
-      isBase: true,
-      parameters: zeroHash,
-    }));
-    for (let i = 0; i < incentives.length; i++) {
-      // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
-      const incentive = incentives.at(i)!;
-      if (incentive.address) {
-        const isBase = incentive.address === incentive.base || incentive.isBase;
-        incentivesPayloads[i] = {
-          isBase: isBase,
-          instance: incentive.address,
-          parameters: isBase
-            ? incentive.buildParameters(undefined, options).args.at(0) ||
-              zeroHash
-            : zeroHash,
-        };
-      } else {
-        incentivesPayloads[i]!.parameters =
-          incentive.buildParameters(undefined, options).args.at(0) || zeroHash;
-        incentivesPayloads[i]!.instance = incentive.base;
-      }
-    }
-
-    const onChainPayload = {
-      budget: budgetPayload,
-      action: actionPayload,
-      validator: validatorPayload,
-      allowList: allowListPayload,
-      incentives: incentivesPayloads,
-      protocolFee,
-      referralFee,
-      maxParticipants,
-      owner,
-    };
+    const onChainPayload = await this.prepareCreateBoostPayload(
+      coreAddress,
+      chainId,
+      payload,
+      options,
+    );
 
     const boostHash = await boostFactory(options.config, {
-      args: [prepareBoostPayload(onChainPayload)],
       ...this.optionallyAttachAccount(options.account),
+      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
+      ...(_params as any),
+      chainId,
+      args: [prepareBoostPayload(onChainPayload)],
     });
     const receipt = await waitForTransactionReceipt(options.config, {
       hash: boostHash,
@@ -460,22 +374,239 @@ export class BoostCore extends Deployable<
     }).at(0);
     let boostId = 0n;
     if (!boostCreatedLog) throw new BoostCoreNoIdentifierEmitted();
-    boostId = boostCreatedLog?.args.boostIndex;
+    boostId = boostCreatedLog?.args.boostId;
     const boost = await this.readBoost(boostId);
     return new Boost({
       id: boostId,
-      budget: budget.at(boost.budget),
-      action: action.at(boost.action),
-      validator: validator.at(boost.validator),
-      allowList: allowList.at(boost.allowList),
-      incentives: incentives.map((incentive, i) =>
+      budget: payload.budget.at(boost.budget),
+      action: payload.action.at(boost.action),
+      validator: payload.validator!.at(boost.validator),
+      allowList: payload.allowList!.at(boost.allowList),
+      incentives: payload.incentives.map((incentive, i) =>
+        // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
         incentive.at(boost.incentives.at(i)!),
       ),
       protocolFee: boost.protocolFee,
-      referralFee: boost.referralFee,
       maxParticipants: boost.maxParticipants,
       owner: boost.owner,
     });
+  }
+
+  /**
+   * Returns a simulated Boost creation.
+   *
+   * @public
+   * @async
+   * @param {CreateBoostPayload} _boostPayload
+   * @param {?WriteParams} [params]
+   * @returns {Promise<SimulateContractReturnType>}
+   */
+  public async simulateCreateBoost(
+    _boostPayload: CreateBoostPayload,
+    _params?: WriteParams<typeof boostCoreAbi, 'createBoost'>,
+  ) {
+    const [payload, options] =
+      this.validateDeploymentConfig<CreateBoostPayload>(_boostPayload);
+    const desiredChainId = _params?.chain?.id || _params?.chainId;
+    const { chainId, address: coreAddress } = assertValidAddressByChainId(
+      options.config,
+      this.addresses,
+      desiredChainId,
+    );
+
+    const onChainPayload = await this.prepareCreateBoostPayload(
+      coreAddress,
+      chainId,
+      payload,
+      options,
+    );
+
+    return await simulateBoostCoreCreateBoost(this._config, {
+      ...this.optionallyAttachAccount(),
+      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
+      ...(_params as any),
+      address: coreAddress,
+      chainId,
+      args: [prepareBoostPayload(onChainPayload)],
+    });
+  }
+
+  // This function mutates payload, which isn't awesome but it's fine
+  private async prepareCreateBoostPayload(
+    coreAddress: Address,
+    chainId: number,
+    payload: CreateBoostPayload,
+    options: DeployableOptions,
+  ): Promise<Required<BoostPayload>> {
+    if (!payload.owner) {
+      payload.owner =
+        this._account?.address ||
+        getAccount(options.config).address ||
+        zeroAddress;
+      if (payload.owner === zeroAddress) {
+        throw new DeployableUnknownOwnerProvidedError();
+      }
+    }
+
+    // If not providing a custom validator, use either Boost's mainnet or testnet EOA, depending on provided chain id and given chain configurations
+    if (!payload.validator) {
+      const chains = getChains(options.config).filter(
+        (chain) => !!this.addresses[chain.id] && chain.id === chainId,
+      );
+      const chain = chains.at(0);
+      if (!chain)
+        throw new InvalidProtocolChainIdError(
+          chainId,
+          Object.keys(this.addresses).map(Number),
+        );
+      const testnet = chain.testnet || chain.id === 31337;
+      payload.validator = this.SignerValidator({
+        signers: [
+          (testnet
+            ? BoostValidatorEOA.TESTNET
+            : BoostValidatorEOA.MAINNET) as unknown as Address,
+        ],
+        validatorCaller: coreAddress,
+      });
+    }
+
+    let budgetPayload: BoostPayload['budget'] = zeroAddress;
+    if (payload.budget.address) {
+      budgetPayload = payload.budget.address;
+      if (!(await payload.budget.isAuthorized(coreAddress))) {
+        throw new BudgetMustAuthorizeBoostCore(coreAddress);
+      }
+    } else {
+      throw new MustInitializeBudgetError();
+    }
+
+    // if we're supplying an address, it could be a pre-initialized target
+    // if base is explicitly set to false, then it will not be initialized, and it will be referenced as is if it implements interface correctly
+    let actionPayload: BoostPayload['action'] = {
+      instance: zeroAddress,
+      isBase: true,
+      parameters: zeroHash,
+    };
+    if (payload.action.address) {
+      const isBase = payload.action.isBase;
+      actionPayload = {
+        isBase: isBase,
+        instance: payload.action.address,
+        parameters: isBase
+          ? payload.action.buildParameters(undefined, options).args.at(0) ||
+            zeroHash
+          : zeroHash,
+      };
+    } else {
+      actionPayload.parameters =
+        payload.action.buildParameters(undefined, options).args.at(0) ||
+        zeroHash;
+      actionPayload.instance = assertValidAddressByChainId(
+        options.config,
+        payload.action.bases,
+        chainId,
+      ).address;
+    }
+
+    let validatorPayload: BoostPayload['validator'] = {
+      instance: zeroAddress,
+      isBase: true,
+      parameters: zeroHash,
+    };
+    if (payload.validator.address) {
+      const isBase = payload.validator.isBase;
+      validatorPayload = {
+        isBase: isBase,
+        instance: payload.validator.address,
+        parameters: isBase
+          ? payload.validator.buildParameters(undefined, options).args.at(0) ||
+            zeroHash
+          : zeroHash,
+      };
+    } else {
+      validatorPayload.parameters =
+        payload.validator.buildParameters(undefined, options).args.at(0) ||
+        zeroHash;
+      validatorPayload.instance = assertValidAddressByChainId(
+        options.config,
+        payload.validator.bases,
+        chainId,
+      ).address;
+    }
+
+    let allowListPayload: BoostPayload['allowList'] = {
+      instance: zeroAddress,
+      isBase: true,
+      parameters: zeroHash,
+    };
+    // if allowlist not provided, assume open allowlist
+    if (!payload.allowList) {
+      payload.allowList = this.OpenAllowList();
+    }
+    if (payload.allowList.address) {
+      const isBase = payload.allowList.isBase;
+      allowListPayload = {
+        isBase: isBase,
+        instance: payload.allowList.address,
+        parameters: isBase
+          ? zeroHash // allowList.buildParameters(undefined, options).args.at(0) || zeroHash
+          : zeroHash,
+      };
+    } else {
+      allowListPayload.parameters =
+        payload.allowList.buildParameters(undefined, options).args.at(0) ||
+        zeroHash;
+      allowListPayload.instance = assertValidAddressByChainId(
+        options.config,
+        payload.allowList.bases,
+        chainId,
+      ).address;
+    }
+
+    const incentivesPayloads: Array<Target> = payload.incentives.map(() => ({
+      instance: zeroAddress,
+      isBase: true,
+      parameters: zeroHash,
+    }));
+    for (let i = 0; i < payload.incentives.length; i++) {
+      // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
+      const incentive = payload.incentives.at(i)!;
+      if (incentive.address) {
+        const isBase = incentive.isBase;
+        if (!isBase) throw new IncentiveNotCloneableError(incentive);
+        incentivesPayloads[i] = {
+          isBase: isBase,
+          instance: incentive.address,
+          parameters: isBase
+            ? incentive.buildParameters(undefined, options).args.at(0) ||
+              zeroHash
+            : zeroHash,
+        };
+      } else {
+        // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
+        incentivesPayloads[i]!.parameters =
+          incentive.buildParameters(undefined, options).args.at(0) || zeroHash;
+        // biome-ignore lint/style/noNonNullAssertion: this will never be undefined
+        incentivesPayloads[i]!.instance = assertValidAddressByChainId(
+          options.config,
+          incentive.bases,
+          chainId,
+        ).address;
+      }
+    }
+
+    const onChainPayload = {
+      budget: budgetPayload,
+      action: actionPayload,
+      validator: validatorPayload,
+      allowList: allowListPayload,
+      incentives: incentivesPayloads,
+      protocolFee: payload.protocolFee || 0n,
+      maxParticipants: payload.maxParticipants || 0n,
+      owner: payload.owner,
+    };
+
+    return onChainPayload;
   }
 
   /**
@@ -487,8 +618,8 @@ export class BoostCore extends Deployable<
    * @param {bigint} incentiveId
    * @param {Address} address
    * @param {Hex} data
-   * @param {?WriteParams<typeof boostCoreAbi, 'claimIncentive'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<void>}
    */
   public async claimIncentive(
     boostId: bigint,
@@ -497,7 +628,7 @@ export class BoostCore extends Deployable<
     data: Hex,
     params?: WriteParams<typeof boostCoreAbi, 'claimIncentive'>,
   ) {
-    return this.awaitResult(
+    return await this.awaitResult(
       this.claimIncentiveRaw(boostId, incentiveId, address, data, params),
     );
   }
@@ -509,23 +640,27 @@ export class BoostCore extends Deployable<
    * @async
    * @param {bigint} boostId - The ID of the Boost
    * @param {bigint} incentiveId - The ID of the Incentive
-   * @param {Address} address - The address of the referrer (if any)
+   * @param {Address} referrer - The address of the referrer (if any)
    * @param {Hex} data- The data for the claim
-   * @param {?WriteParams<typeof boostCoreAbi, 'claimIncentive'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: void; }>}
    */
   public async claimIncentiveRaw(
     boostId: bigint,
     incentiveId: bigint,
-    address: Address,
+    referrer: Address,
     data: Hex,
     params?: WriteParams<typeof boostCoreAbi, 'claimIncentive'>,
   ) {
     const { request, result } = await simulateBoostCoreClaimIncentive(
       this._config,
       {
-        address: this.assertValidAddress(),
-        args: [boostId, incentiveId, address, data],
+        ...assertValidAddressByChainId(
+          this._config,
+          this.addresses,
+          params?.chain?.id || params?.chainId,
+        ),
+        args: [boostId, incentiveId, referrer, data],
         ...this.optionallyAttachAccount(),
         // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
         ...(params as any),
@@ -536,25 +671,113 @@ export class BoostCore extends Deployable<
   }
 
   /**
+   * Claims one incentive for a given `Boost` on behalf of another user by `boostId` and `incentiveId`
+   *
+   * @public
+   * @async
+   * @param {bigint} boostId
+   * @param {bigint} incentiveId
+   * @param {Address} referrer
+   * @param {Hex} data
+   * @param {Address} claimant
+   * @param {?WriteParams} [params]
+   * @returns {Promise<void>}
+   */
+  public async claimIncentiveFor(
+    boostId: bigint,
+    incentiveId: bigint,
+    referrer: Address,
+    data: Hex,
+    claimant: Address,
+    params?: WriteParams<typeof boostCoreAbi, 'claimIncentiveFor'>,
+  ) {
+    return await this.awaitResult(
+      this.claimIncentiveForRaw(
+        boostId,
+        incentiveId,
+        referrer,
+        data,
+        claimant,
+        params,
+      ),
+    );
+  }
+
+  /**
+   * Claim an incentive for a Boost on behalf of another user
+   *
+   * @public
+   * @async
+   * @param {bigint} boostId - The ID of the Boost
+   * @param {bigint} incentiveId - The ID of the Incentive
+   * @param {Address} referrer - The address of the referrer (if any)
+   * @param {Hex} data - The data for the claim
+   * @param {Address} claimant - The address of the user eligible for the incentive payout
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: Hex; result: void; }>}
+   */
+  public async claimIncentiveForRaw(
+    boostId: bigint,
+    incentiveId: bigint,
+    referrer: Address,
+    data: Hex,
+    claimant: Address,
+    params?: WriteParams<typeof boostCoreAbi, 'claimIncentiveFor'>,
+  ) {
+    const { request, result } = await simulateBoostCoreClaimIncentiveFor(
+      this._config,
+      {
+        ...assertValidAddressByChainId(
+          this._config,
+          this.addresses,
+          params?.chain?.id || params?.chainId,
+        ),
+        args: [boostId, incentiveId, referrer, data, claimant],
+        ...this.optionallyAttachAccount(),
+        // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
+        ...(params as any),
+      },
+    );
+    const hash = await writeBoostCoreClaimIncentiveFor(this._config, request);
+    return { hash, result };
+  }
+
+  /**
    * Get a Boost by index, will return the raw on chain representation of a Boost.
    *
    * @public
    * @async
-   * @param {bigint} id
-   * @param {?ReadParams<typeof boostCoreAbi, 'getBoost'>} [params]
-   * @returns {unknown}
+   * @param {bigint | string} id
+   * @param {?ReadParams} [params]
+   * @returns {Promise<RawBoost>}
+   * @throws {@link BoostNotFoundError}
    */
   public async readBoost(
-    id: bigint,
+    _id: string | bigint,
     params?: ReadParams<typeof boostCoreAbi, 'getBoost'>,
-  ) {
-    return readBoostCoreGetBoost(this._config, {
-      address: this.assertValidAddress(),
-      args: [id],
-      ...this.optionallyAttachAccount(),
-      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-      ...(params as any),
-    });
+  ): Promise<RawBoost> {
+    try {
+      let id: bigint;
+      if (typeof _id === 'string') {
+        id = BigInt(_id);
+      } else id = _id;
+      return await readBoostCoreGetBoost(this._config, {
+        ...assertValidAddressByChainId(
+          this._config,
+          this.addresses,
+          params?.chainId,
+        ),
+        args: [id],
+        ...this.optionallyAttachAccount(),
+        // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
+        ...(params as any),
+      });
+      // biome-ignore lint/suspicious/noExplicitAny: unknown error
+    } catch (e: any) {
+      if (e?.message?.includes('bounds'))
+        throw new BoostNotFoundError(String(_id));
+      throw e;
+    }
   }
 
   /**
@@ -563,8 +786,9 @@ export class BoostCore extends Deployable<
    * @public
    * @async
    * @param {(string | bigint)} _id
-   * @param {?ReadParams<typeof boostCoreAbi, 'getBoost'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Boost>}
+   * @throws {@link BoostNotFoundError}
    */
   public async getBoost(
     _id: string | bigint,
@@ -574,13 +798,8 @@ export class BoostCore extends Deployable<
     if (typeof _id === 'string') {
       id = BigInt(_id);
     } else id = _id;
-    const {
-      protocolFee,
-      referralFee,
-      maxParticipants,
-      owner,
-      ...boostPayload
-    } = await this.readBoost(id, params);
+    const { protocolFee, maxParticipants, owner, ...boostPayload } =
+      await this.readBoost(id, params);
     const options: DeployableOptions = {
       config: this._config,
       account: this._account,
@@ -603,9 +822,8 @@ export class BoostCore extends Deployable<
       budget,
       validator,
       allowList,
-      incentives,
+      incentives: incentives as Incentive[],
       protocolFee,
-      referralFee,
       maxParticipants,
       owner,
     });
@@ -616,14 +834,18 @@ export class BoostCore extends Deployable<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof boostCoreAbi, 'getBoostCount'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async getBoostCount(
     params?: ReadParams<typeof boostCoreAbi, 'getBoostCount'>,
   ) {
-    return readBoostCoreGetBoostCount(this._config, {
-      address: this.assertValidAddress(),
+    return await readBoostCoreGetBoostCount(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -637,7 +859,7 @@ export class BoostCore extends Deployable<
    * @public
    * @async
    * @param {Address} address
-   * @param {?ReadParams<typeof boostCoreAbi, 'createBoostAuth'> &
+   * @param {?ReadParams &
    *       ReadParams<typeof iAuthAbi, 'isAuthorized'>} [params]
    * @returns {Promise<boolean>}
    */
@@ -646,7 +868,7 @@ export class BoostCore extends Deployable<
     params?: ReadParams<typeof boostCoreAbi, 'createBoostAuth'> &
       ReadParams<typeof iAuthAbi, 'isAuthorized'>,
   ) {
-    const auth = await this.createBoostAuth();
+    const auth = await this.createBoostAuth(params);
     return readIAuthIsAuthorized(this._config, {
       address: auth,
       args: [address],
@@ -661,14 +883,18 @@ export class BoostCore extends Deployable<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof boostCoreAbi, 'createBoostAuth'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>}
    */
   public async createBoostAuth(
     params?: ReadParams<typeof boostCoreAbi, 'createBoostAuth'>,
   ) {
-    return readBoostCoreCreateBoostAuth(this._config, {
-      address: this.assertValidAddress(),
+    return await readBoostCoreCreateBoostAuth(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -682,14 +908,14 @@ export class BoostCore extends Deployable<
    * @public
    * @async
    * @param {Auth} auth
-   * @param {?WriteParams<typeof boostCoreAbi, 'setCreateBoostAuth'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<void>}
    */
   public async setCreateBoostAuth(
     auth: Auth,
     params?: WriteParams<typeof boostCoreAbi, 'setCreateBoostAuth'>,
   ) {
-    return this.awaitResult(
+    return await this.awaitResult(
       this.setCreateBoostAuthRaw(auth.assertValidAddress(), {
         ...params,
       }),
@@ -702,8 +928,8 @@ export class BoostCore extends Deployable<
    * @public
    * @async
    * @param {Address} address
-   * @param {?WriteParams<typeof boostCoreAbi, 'setCreateBoostAuth'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: void; }>}
    */
   public async setCreateBoostAuthRaw(
     address: Address,
@@ -712,7 +938,11 @@ export class BoostCore extends Deployable<
     const { request, result } = await simulateBoostCoreSetCreateBoostAuth(
       this._config,
       {
-        address: this.assertValidAddress(),
+        ...assertValidAddressByChainId(
+          this._config,
+          this.addresses,
+          params?.chainId,
+        ),
         args: [address],
         ...this.optionallyAttachAccount(),
         // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -728,14 +958,18 @@ export class BoostCore extends Deployable<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof boostCoreAbi, 'protocolFee'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {unknown}
    */
   public async protocolFee(
     params?: ReadParams<typeof boostCoreAbi, 'protocolFee'>,
   ) {
-    return readBoostCoreProtocolFee(this._config, {
-      address: this.assertValidAddress(),
+    return await readBoostCoreProtocolFee(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -748,14 +982,18 @@ export class BoostCore extends Deployable<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof boostCoreAbi, 'protocolFeeReceiver'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>}
    */
   public async protocolFeeReceiver(
     params?: ReadParams<typeof boostCoreAbi, 'protocolFeeReceiver'>,
   ) {
-    return readBoostCoreProtocolFeeReceiver(this._config, {
-      address: this.assertValidAddress(),
+    return await readBoostCoreProtocolFeeReceiver(this._config, {
+      ...assertValidAddressByChainId(
+        this._config,
+        this.addresses,
+        params?.chainId,
+      ),
       args: [],
       ...this.optionallyAttachAccount(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -769,14 +1007,14 @@ export class BoostCore extends Deployable<
    * @public
    * @async
    * @param {Address} address
-   * @param {?WriteParams<typeof boostCoreAbi, 'setProtocolFeeReceiver'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<void>}
    */
   public async setProcolFeeReceiver(
     address: Address,
     params?: WriteParams<typeof boostCoreAbi, 'setProtocolFeeReceiver'>,
   ) {
-    return this.awaitResult(
+    return await this.awaitResult(
       this.setProcolFeeReceiverRaw(address, {
         ...params,
       }),
@@ -789,8 +1027,8 @@ export class BoostCore extends Deployable<
    * @public
    * @async
    * @param {Address} address
-   * @param {?WriteParams<typeof boostCoreAbi, 'setProtocolFeeReceiver'>} [params]
-   * @returns {unknown}
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: void; }>}
    */
   public async setProcolFeeReceiverRaw(
     address: Address,
@@ -799,7 +1037,11 @@ export class BoostCore extends Deployable<
     const { request, result } = await simulateBoostCoreSetProtocolFeeReceiver(
       this._config,
       {
-        address: this.assertValidAddress(),
+        ...assertValidAddressByChainId(
+          this._config,
+          this.addresses,
+          params?.chainId,
+        ),
         args: [address],
         ...this.optionallyAttachAccount(),
         // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -814,64 +1056,38 @@ export class BoostCore extends Deployable<
   }
 
   /**
-   * Get the claim fee.
+   * Retrieves the claim information from a transaction receipt.
    *
-   * @public
-   * @async
-   * @param {?ReadParams<typeof boostCoreAbi, 'claimFee'>} [params]
-   * @returns {unknown}
+   * @param {GetTransactionReceiptParameters} params - The parameters required to get the transaction receipt.
+   * @returns {Promise<{ boostId: bigint, incentiveId: bigint, claimer: Address, amount: bigint } | undefined>} The claim information if found, undefined otherwise.
+   *
+   * @description
+   * This method retrieves the transaction receipt using the provided parameters,
+   * then parses the logs to find the 'BoostClaimed' event.
+   * If found, it returns the arguments of the event, which include the boost ID,
+   * incentive ID, claimer address, and claimed amount.
+   *
+   * @example
+   * ```ts
+   * const claimInfo = await boostCore.getClaimFromTransaction({
+   *   hash: '0x...',
+   *   chainId: 1
+   * });
+   * if (claimInfo) {
+   *   console.log(`Boost ${claimInfo.boostId} claimed by ${claimInfo.claimer}`);
+   * }
+   * ```
    */
-  public async claimFee(params?: ReadParams<typeof boostCoreAbi, 'claimFee'>) {
-    return readBoostCoreClaimFee(this._config, {
-      address: this.assertValidAddress(),
-      args: [],
-      ...this.optionallyAttachAccount(),
-      // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-      ...(params as any),
+  public async getClaimFromTransaction(
+    params: GetTransactionReceiptParameters,
+  ) {
+    const receipt = await getTransactionReceipt(this._config, params);
+    const logs = parseEventLogs({
+      abi: boostCoreAbi,
+      eventName: 'BoostClaimed',
+      logs: receipt.logs,
     });
-  }
-
-  /**
-   * Sets the claim fee.
-   *
-   * @public
-   * @async
-   * @param {bigint} claimFee
-   * @param {?WriteParams<typeof boostCoreAbi, 'setClaimFee'>} [params]
-   * @returns {unknown}
-   */
-  public async setClaimFee(
-    claimFee: bigint,
-    params?: WriteParams<typeof boostCoreAbi, 'setClaimFee'>,
-  ) {
-    return this.awaitResult(this.setClaimFeeRaw(claimFee, params));
-  }
-
-  /**
-   * Sets the claim fee.
-   *
-   * @public
-   * @async
-   * @param {bigint} claimFee
-   * @param {?WriteParams<typeof boostCoreAbi, 'setClaimFee'>} [params]
-   * @returns {unknown}
-   */
-  public async setClaimFeeRaw(
-    claimFee: bigint,
-    params?: WriteParams<typeof boostCoreAbi, 'setClaimFee'>,
-  ) {
-    const { request, result } = await simulateBoostCoreSetClaimFee(
-      this._config,
-      {
-        address: this.assertValidAddress(),
-        args: [claimFee],
-        ...this.optionallyAttachAccount(),
-        // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
-        ...(params as any),
-      },
-    );
-    const hash = await writeBoostCoreSetClaimFee(this._config, request);
-    return { hash, result };
+    return logs.at(0)?.args;
   }
 
   /**
@@ -879,12 +1095,11 @@ export class BoostCore extends Deployable<
    *
    * @example
    * ```ts
-   * const action = core.ContractAction('0x') // is roughly equivalent to
-   * const action = new ContractAction({ config: core._config, account: core._account }, '0x')
+   * const auth = core.PassthroughAuth('0x') // is roughly equivalent to
+   * const auth = new PassthroughAuth({ config: core._config, account: core._account }, '0x')
    * ```
-   * @param {DeployablePayloadOrAddress<{}>} options
-   * @param {?boolean} [isBase]
-   * @returns {ContractAction}
+   * @param {Address} address
+   * @returns {PassthroughAuth}
    */
   PassthroughAuth(address?: Address) {
     return new PassthroughAuth(
@@ -893,28 +1108,28 @@ export class BoostCore extends Deployable<
     );
   }
 
-  /**
-   * Bound {@link ContractAction} constructor that reuses the same configuration as the Boost Core instance.
-   *
-   * @example
-   * ```ts
-   * const action = core.ContractAction('0x') // is roughly equivalent to
-   * const action = new ContractAction({ config: core._config, account: core._account }, '0x')
-   * ```
-   * @param {DeployablePayloadOrAddress<ContractActionPayload>} options
-   * @param {?boolean} [isBase]
-   * @returns {ContractAction}
-   */
-  ContractAction(
-    options: DeployablePayloadOrAddress<ContractActionPayload>,
-    isBase?: boolean,
-  ) {
-    return new ContractAction(
-      { config: this._config, account: this._account },
-      options,
-      isBase,
-    );
-  }
+  // /**
+  //  * Bound {@link ContractAction} constructor that reuses the same configuration as the Boost Core instance.
+  //  *
+  //  * @example
+  //  * ```ts
+  //  * const action = core.ContractAction('0x') // is roughly equivalent to
+  //  * const action = new ContractAction({ config: core._config, account: core._account }, '0x')
+  //  * ```
+  //  * @param {DeployablePayloadOrAddress<ContractActionPayload>} options
+  //  * @param {?boolean} [isBase]
+  //  * @returns {ContractAction}
+  //  */
+  // ContractAction(
+  //   options: DeployablePayloadOrAddress<ContractActionPayload>,
+  //   isBase?: boolean,
+  // ) {
+  //   return new ContractAction(
+  //     { config: this._config, account: this._account },
+  //     options,
+  //     isBase,
+  //   );
+  // }
 
   /**
    * Bound {@link EventAction} constructor that reuses the same configuration as the Boost Core instance.
@@ -934,25 +1149,43 @@ export class BoostCore extends Deployable<
       isBase,
     );
   }
+  // /**
+  //  * Bound {@link ERC721MintAction} constructor that reuses the same configuration as the Boost Core instance.
+  //  *
+  //  * @example
+  //  * ```ts
+  //  * const action = core.ERC721MintAction('0x') // is roughly equivalent to
+  //  * const action = new ERC721MintAction({ config: core._config, account: core._account }, '0x')
+  //  * ```
+  //  * @param {DeployablePayloadOrAddress<ERC721MintActionPayload>} options
+  //  * @param {?boolean} [isBase]
+  //  * @returns {ERC721MintAction}
+  //  */
+  // ERC721MintAction(
+  //   options: DeployablePayloadOrAddress<ERC721MintActionPayload>,
+  //   isBase?: boolean,
+  // ) {
+  //   return new ERC721MintAction(
+  //     { config: this._config, account: this._account },
+  //     options,
+  //     isBase,
+  //   );
+  // }
   /**
-   * Bound {@link ERC721MintAction} constructor that reuses the same configuration as the Boost Core instance.
+   * Bound {@link OpenAllowList} constructor that reuses the same configuration as the Boost Core instance.
    *
    * @example
    * ```ts
-   * const action = core.ERC721MintAction('0x') // is roughly equivalent to
-   * const action = new ERC721MintAction({ config: core._config, account: core._account }, '0x')
+   * const list = core.OpenAllowList('0x') // is roughly equivalent to
+   * const list = new OpenAllowList({ config: core._config, account: core._account }, '0x')
    * ```
-   * @param {DeployablePayloadOrAddress<ERC721MintActionPayload>} options
    * @param {?boolean} [isBase]
-   * @returns {ERC721MintAction}
+   * @returns {OpenAllowList}
    */
-  ERC721MintAction(
-    options: DeployablePayloadOrAddress<ERC721MintActionPayload>,
-    isBase?: boolean,
-  ) {
-    return new ERC721MintAction(
+  OpenAllowList(isBase?: boolean) {
+    return new OpenAllowList(
       { config: this._config, account: this._account },
-      options,
+      undefined,
       isBase,
     );
   }
@@ -1000,23 +1233,23 @@ export class BoostCore extends Deployable<
       isBase,
     );
   }
-  /**
-   * Bound {@link SimpleBudget} constructor that reuses the same configuration as the Boost Core instance.
-   *
-   * @example
-   * ```ts
-   * const budget = core.SimpleBudget('0x') // is roughly equivalent to
-   * const budget = new SimpleBudget({ config: core._config, account: core._account }, '0x')
-   * ```
-   * @param {DeployablePayloadOrAddress<SimpleBudgetPayload>} options
-   * @returns {SimpleBudget}
-   */
-  SimpleBudget(options: DeployablePayloadOrAddress<SimpleBudgetPayload>) {
-    return new SimpleBudget(
-      { config: this._config, account: this._account },
-      options,
-    );
-  }
+  // /**
+  //  * Bound {@link SimpleBudget} constructor that reuses the same configuration as the Boost Core instance.
+  //  *
+  //  * @example
+  //  * ```ts
+  //  * const budget = core.SimpleBudget('0x') // is roughly equivalent to
+  //  * const budget = new SimpleBudget({ config: core._config, account: core._account }, '0x')
+  //  * ```
+  //  * @param {DeployablePayloadOrAddress<SimpleBudgetPayload>} options
+  //  * @returns {SimpleBudget}
+  //  */
+  // SimpleBudget(options: DeployablePayloadOrAddress<SimpleBudgetPayload>) {
+  //   return new SimpleBudget(
+  //     { config: this._config, account: this._account },
+  //     options,
+  //   );
+  // }
   /**
    * Bound {@link ManagedBudget} constructor that reuses the same configuration as the Boost Core instance.
    *
@@ -1034,23 +1267,23 @@ export class BoostCore extends Deployable<
       options,
     );
   }
-  /**
-   * Bound {@link VestingBudget} constructor that reuses the same configuration as the Boost Core instance.
-   *
-   * @example
-   * ```ts
-   * const budget = core.VestingBudget('0x') // is roughly equivalent to
-   * const budget = new VestingBudget({ config: core._config, account: core._account }, '0x')
-   * ```
-   * @param {DeployablePayloadOrAddress<VestingBudgetPayload>} options
-   * @returns {VestingBudget}
-   */
-  VestingBudget(options: DeployablePayloadOrAddress<VestingBudgetPayload>) {
-    return new VestingBudget(
-      { config: this._config, account: this._account },
-      options,
-    );
-  }
+  // /**
+  //  * Bound {@link VestingBudget} constructor that reuses the same configuration as the Boost Core instance.
+  //  *
+  //  * @example
+  //  * ```ts
+  //  * const budget = core.VestingBudget('0x') // is roughly equivalent to
+  //  * const budget = new VestingBudget({ config: core._config, account: core._account }, '0x')
+  //  * ```
+  //  * @param {DeployablePayloadOrAddress<VestingBudgetPayload>} options
+  //  * @returns {VestingBudget}
+  //  */
+  // VestingBudget(options: DeployablePayloadOrAddress<VestingBudgetPayload>) {
+  //   return new VestingBudget(
+  //     { config: this._config, account: this._account },
+  //     options,
+  //   );
+  // }
   /**
    * Bound {@link AllowListIncentive} constructor that reuses the same configuration as the Boost Core instance.
    *
@@ -1102,25 +1335,25 @@ export class BoostCore extends Deployable<
       options,
     );
   }
-  /**
-   * Temporarily disabled until low level ABI encoding bugs are resolved
-   * Bound {@link ERC1155Incentive} constructor that reuses the same configuration as the Boost Core instance.
-   *
-   * @experimental
-   * @example
-   * ```ts
-   * const incentive = core.ERC1155Incentive({ ... }) // is roughly equivalent to
-   * const incentive = new ERC1155Incentive({ config: core._config, account: core._account }, { ... })
-   * ```
-   * @param {ERC1155IncentivePayload} options
-   * @returns {ERC1155Incentive}
-   */
-  ERC1155Incentive(options: ERC1155IncentivePayload) {
-    return new ERC1155Incentive(
-      { config: this._config, account: this._account },
-      options,
-    );
-  }
+  // /**
+  //  * Temporarily disabled until low level ABI encoding bugs are resolved
+  //  * Bound {@link ERC1155Incentive} constructor that reuses the same configuration as the Boost Core instance.
+  //  *
+  //  * @experimental
+  //  * @example
+  //  * ```ts
+  //  * const incentive = core.ERC1155Incentive({ ... }) // is roughly equivalent to
+  //  * const incentive = new ERC1155Incentive({ config: core._config, account: core._account }, { ... })
+  //  * ```
+  //  * @param {ERC1155IncentivePayload} options
+  //  * @returns {ERC1155Incentive}
+  //  */
+  // ERC1155Incentive(options: ERC1155IncentivePayload) {
+  //   return new ERC1155Incentive(
+  //     { config: this._config, account: this._account },
+  //     options,
+  //   );
+  // }
   /**
    * Bound {@link PointsIncentive} constructor that reuses the same configuration as the Boost Core instance.
    *
@@ -1160,6 +1393,53 @@ export class BoostCore extends Deployable<
       isBase,
     );
   }
+
+  /**
+   * Bound {@link LimitedSignerValidator} constructor that reuses the same configuration as the Boost Core instance.
+   *
+   * @example
+   * ```ts
+   * const validator = core.LimitedSignerValidator({ ... }) // is roughly equivalent to
+   * const validator = new LimitedSignerValidator({ config: core._config, account: core._account }, { ... })
+   * ```
+   * @param {DeployablePayloadOrAddress<LimitedSignerValidatorPayload>} options
+   * @param {?boolean} [isBase]
+   * @returns {LimitedSignerValidator}
+   */
+  LimitedSignerValidator(
+    options: DeployablePayloadOrAddress<LimitedSignerValidatorPayload>,
+    isBase?: boolean,
+  ) {
+    return new LimitedSignerValidator(
+      { config: this._config, account: this._account },
+      options,
+      isBase,
+    );
+  }
+
+  /**
+   * Bound {@link ERC20VariableCriteriaIncentive} constructor that reuses the same configuration as the Boost Core instance.
+   *
+   * @example
+   * ```ts
+   * const validator = core.ERC20VariableCrtieriaIncentive({ ... }) // is roughly equivalent to
+   * const validator = new ERC20VariableCrtieriaIncentive({ config: core._config, account: core._account }, { ... })
+   * ```
+   * @param {DeployablePayloadOrAddress<ERC20VariableCrtieriaIncentivePayload>} options
+   * @param {?boolean} [isBase]
+   * @returns {ERC20VariableCrtieriaIncentive}
+   * */
+  ERC20VariableCriteriaIncentive(
+    options: DeployablePayloadOrAddress<ERC20VariableCriteriaIncentivePayload>,
+    isBase?: boolean,
+  ) {
+    return new ERC20VariableCriteriaIncentive(
+      { config: this._config, account: this._account },
+      options,
+      isBase,
+    );
+  }
+
   /**
    * Bound {@link ERC20VariableIncentive} constructor that reuses the same configuration as the Boost Core instance.
    *

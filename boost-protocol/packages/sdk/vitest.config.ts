@@ -1,18 +1,17 @@
+import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 
+const env = loadEnv('', process.cwd(), '');
+
 export default defineConfig({
-  define: {},
+  define: {
+    __DEFAULT_CHAIN_ID__: env.DEFAULT_CHAIN_ID
+      ? Number(env['DEFAULT_CHAIN_ID'])
+      : 31337,
+  },
   test: {
     fileParallelism: false,
-    globalSetup: ['./test/setup.hardhat.ts'],
-    // reporters: [
-    //   'default',
-    //   {
-    //     async onWatcherRerun() {
-    //       await teardown();
-    //       await setup();
-    //     },
-    //   },
-    // ],
+    env,
+    globalSetup: ['../../test/src/setup.hardhat.ts'],
   },
 });

@@ -10,11 +10,14 @@
     - [Getting Started](#getting-started)
     - [Solidity Development](#solidity-development)
   - [Coverage](#coverage)
-    - [Developing with the SDK](#developing-with-the-sdk)
-    - [Changesets \& Publishing](#changesets--publishing)
+  - [Developing with the SDK](#developing-with-the-sdk)
+  - [Changesets \& Publishing](#changesets--publishing)
+  - [Contract Deployment](#contract-deployment)
+    - [Deploy Core Contracts](#deploy-core-contracts)
+    - [Deploy Module Contracts](#deploy-module-contracts)
 
 [![Documentation](https://img.shields.io/badge/documentation-gh--pages-blue)](https://rabbitholegg.github.io/boost-protocol/index.html)
-[![Test Status](https://github.com/rabbitholegg/boost-protocol/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/rabbitholegg/boost-protocol/actions/workflows/verify.yml)
+[![Test Status](https://github.com/boostxyz/boost-protocol/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/boostxyz/boost-protocol/actions/workflows/verify.yml)
 
 > [!WARNING]
 > Boost Protocol is currently under active development and is not ready for production use. The code and documentation are subject to change. We recommend against building on top of the protocol prior to the first official release.
@@ -92,7 +95,7 @@ The Boost Protocol is designed to be flexible and customizable, allowing develop
 
 ### Getting Started
 
-Clone the repository - `git clone https://github.com/rabbitholegg/boost-protocol`
+Clone the repository - `git clone https://github.com/boostxyz/boost-protocol`
 
 Install dependencies - `pnpm install`. This command will also initialize all submodules required for `evm` package development.
 
@@ -122,7 +125,7 @@ After running coverage you should have an `lcov.info` file in `/packages/evm/cov
 
 You may need to tweak the settings for the extention in order to help it find the coverage report.
 
-### Developing with the SDK
+## Developing with the SDK
 
 The build step for `@boostxyz/sdk` requires the following deployed contract address environment variables to exist in either a global context, or set in `/packages/sdk/.env`
 
@@ -134,7 +137,6 @@ VITE_EVENT_ACTION_BASE=
 VITE_ERC721_MINT_ACTION_BASE=
 VITE_SIMPLE_ALLOWLIST_BASE=
 VITE_SIMPLE_DENYLIST_BASE=
-VITE_SIMPLE_BUDGET_BASE=
 VITE_MANAGED_BUDGET_BASE=
 VITE_VESTING_BUDGET_BASE=
 VITE_ALLOWLIST_INCENTIVE_BASE=
@@ -175,8 +177,66 @@ import { BoostCore } from '@boostxyz/sdk'
 // etc
 ```
 
-### Changesets & Publishing
+## Changesets & Publishing
 
 In order to publish you need to make sure that the pull request you're submitting has a changeset. If you don't want to publish this isn't needed. In order to generate a changeset run `pnpm changeset`, select a change type [major,minor,patch], and draft a small summary of the changeset. Select version based on [semantic versioning](https://semver.org/).
 
 After this all you need to do is push and merge the pull request and the Github Action will handle the process of versioning, and publishing.
+
+> [!NOTE]
+> You do not need to add a changeset if you are just modifying test files.
+
+## Contract Deployment
+
+To deploy the contracts, you can use the provided scripts. Make sure to replace any sensitive information such as private keys with your own secure values.
+
+### Deployment Steps
+1. Update foundry using `foundryup`
+2. Make sure you have all `.env` variables added:
+
+    ```
+    BOOST_FEE_RECIPIENT=
+    BOOST_DEPLOYMENT_SALT=
+    ETHERSCAN_API_KEY=
+    MAIN_ETHERSCAN_API_KEY=
+    ```
+
+3. Note the current deployed addresses in `packages/evm/deploys`
+
+    The currently deployed addresses will be ordered based on network ID.
+
+    If there is a file representing a deployment on the network you’ll be deploying to take note of the current address.
+
+    If there is **not** a file representing a deployment on that network you have to create one inside the `pacakges/evm/deploys`  with `touch <networkid>.json` for example:
+
+    `cd packages/evm/deploys`
+
+    `touch 31337.json`
+
+4. [OPTIONAL] Deploy Core Contracts
+
+
+    <aside>
+    💡
+
+    In the vast majority of cases you WILL NOT want to redeploy core and registry. Make absolutely sure you know what you’re doing before doing this step.
+
+    </aside>
+
+    To deploy the core contracts to the `Sepolia testnet`, use the following command:
+
+    ```solidity
+    forge script script/solidity/Deploy.s.sol:CoreDeployer -f https://eth-sepolia.g.alchemy.com/v2/YOUR_ALCHEMY_API_KEY --broadcast --verify --private-key "YOUR_PRIVATE_KEY"
+    ```
+
+    In order to deploy to another network simply switch the RPC you're broadcasting against.
+
+5. Deploy Module Contracts
+
+    To deploy the module contracts to the `Sepolia testnet`, use the following command:
+
+    ```solidity
+    forge script script/solidity/Deploy_Modules.s.sol:ModuleBaseDeployer -f https://eth-sepolia.g.alchemy.com/v2/YOUR_ALCHEMY_API_KEY --broadcast --verify --private-key "YOUR_PRIVATE_KEY"`
+    ```
+
+6. Confirm that the addresses have changed for any module with new byte code. Any contract with any changes should have new byte code, and as a result be redeployed on a new deployment. Any contracts that *have not* changed should not be redeployed.

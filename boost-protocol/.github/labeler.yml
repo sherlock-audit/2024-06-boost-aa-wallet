@@ -1,0 +1,15 @@
+"SDK":
+  - changed-files:
+      - any-glob-to-any-file: "packages/sdk/**"
+"EVM":
+  - changed-files:
+      - any-glob-to-any-file: "packages/evm/**"
+"signatures":
+  - changed-files:
+      - any-glob-to-any-file: "packages/signatures/**"
+"examples":
+  - changed-files:
+      - any-glob-to-any-file: "examples/**"
+"changeset":
+  - changed-files:
+      - any-glob-to-any-file: ".changeset/*.md"

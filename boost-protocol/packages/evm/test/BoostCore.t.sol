@@ -18,7 +18,7 @@ import {SimpleAllowList} from "contracts/allowlists/SimpleAllowList.sol";
 
 // Budgets
 import {ABudget} from "contracts/budgets/ABudget.sol";
-import {SimpleBudget} from "contracts/budgets/SimpleBudget.sol";
+import {ManagedBudget} from "contracts/budgets/ManagedBudget.sol";
 
 // Incentives
 import {AIncentive} from "contracts/incentives/AIncentive.sol";
@@ -45,11 +45,15 @@ contract BoostCoreTest is Test {
     address[] mockAddresses;
 
     BoostCore boostCore = new BoostCore(new BoostRegistry(), address(1));
-    BoostLib.Target action = _makeAction(address(mockERC721), MockERC721.mint.selector, mockERC721.mintPrice());
+    BoostLib.Target action =
+        _makeERC721MintAction(address(mockERC721), MockERC721.mint.selector, mockERC721.mintPrice());
+    BoostLib.Target contractAction =
+        _makeContractAction(address(mockERC721), MockERC721.mint.selector, mockERC721.mintPrice());
     BoostLib.Target allowList = _makeAllowList(address(this));
 
     address[] authorized = [address(boostCore)];
-    ABudget budget = _makeBudget(address(this), authorized);
+    uint256[] roles = [1 << 0];
+    ABudget budget = _makeBudget(address(this), authorized, roles);
 
     bytes validCreateCalldata = LibZip.cdCompress(
         abi.encode(
@@ -59,8 +63,7 @@ contract BoostCoreTest is Test {
                 validator: BoostLib.Target({isBase: true, instance: address(0), parameters: ""}),
                 allowList: allowList,
                 incentives: _makeIncentives(1),
-                protocolFee: 500, // 5%
-                referralFee: 1000, // 10%
+                protocolFee: 0, // 5%
                 maxParticipants: 10_000,
                 owner: address(1)
             })
@@ -68,15 +71,16 @@ contract BoostCoreTest is Test {
     );
 
     function setUp() public {
-        mockERC20.mint(address(this), 100 ether);
-        mockERC20.approve(address(budget), 100 ether);
+        // We allocate 100 for the boost and 10 for protocol fees
+        mockERC20.mint(address(this), 110 ether);
+        mockERC20.approve(address(budget), 110 ether);
         budget.allocate(
             abi.encode(
                 ABudget.Transfer({
                     assetType: ABudget.AssetType.ERC20,
                     asset: address(mockERC20),
                     target: address(this),
-                    data: abi.encode(ABudget.FungiblePayload({amount: 100 ether}))
+                    data: abi.encode(ABudget.FungiblePayload({amount: 110 ether}))
                 })
             )
         );
@@ -124,14 +128,36 @@ contract BoostCoreTest is Test {
         assertEq(1, boostCore.getBoostCount());
     }
 
+    function testCreateBoost_NoValidator() public {
+        bytes memory invalidCreateCalldata = LibZip.cdCompress(
+            abi.encode(
+                BoostCore.InitPayload({
+                    budget: budget,
+                    action: contractAction,
+                    validator: BoostLib.Target({isBase: true, instance: address(0), parameters: ""}),
+                    allowList: allowList,
+                    incentives: _makeIncentives(1),
+                    protocolFee: 0,
+                    maxParticipants: 10_000,
+                    owner: address(1)
+                })
+            )
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(BoostError.InvalidInstance.selector, type(AValidator).interfaceId, address(0))
+        );
+        boostCore.createBoost(invalidCreateCalldata);
+        assertEq(0, boostCore.getBoostCount());
+    }
+
     function testCreateBoost_FullValidation() public {
         // Create the Boost
         BoostLib.Boost memory boost = boostCore.createBoost(validCreateCalldata);
 
         // Check the basics
         assertEq(boost.owner, address(1));
-        assertEq(boost.protocolFee, boostCore.protocolFee() + 500);
-        assertEq(boost.referralFee, boostCore.referralFee() + 1000);
+        assertEq(boost.protocolFee, boostCore.protocolFee());
         assertEq(boost.maxParticipants, 10_000);
 
         // Check the ABudget
@@ -223,7 +249,6 @@ contract BoostCoreTest is Test {
                     BoostLib.Target({isBase: true, instance: address(0), parameters: ""}),
                     allowList,
                     _makeIncentives(1),
-                    0.01 ether,
                     0.001 ether,
                     10_000,
                     address(this)
@@ -251,7 +276,6 @@ contract BoostCoreTest is Test {
                     action,
                     allowList,
                     _makeIncentives(1),
-                    0.01 ether,
                     0.001 ether,
                     10_000,
                     address(this)
@@ -318,6 +342,10 @@ contract BoostCoreTest is Test {
         // Prepare the data payload for validation
         bytes memory data = abi.encode(address(this), abi.encode(tokenId));
 
+        // Expect the BoostClaimed event to be emitted
+        vm.expectEmit(true, true, true, true);
+        emit BoostCore.BoostClaimed(0, 0, address(this), address(0), data);
+
         // Claim the incentive
         boostCore.claimIncentive{value: 0.000075 ether}(0, 0, address(0), data);
 
@@ -325,28 +353,6 @@ contract BoostCoreTest is Test {
         BoostLib.Boost memory boost = boostCore.getBoost(0);
         ERC20Incentive _incentive = ERC20Incentive(address(boost.incentives[0]));
         assertEq(_incentive.claims(), 1);
-    }
-
-    function testClaimIncentive_InsufficientFunds() public {
-        // Create a Boost first
-        boostCore.createBoost(validCreateCalldata);
-
-        // Mint an ERC721 token to the claimant (this contract)
-        uint256 tokenId = 1;
-        mockERC721.mint{value: 0.1 ether}(address(this));
-        mockERC721.mint{value: 0.1 ether}(address(this));
-        mockERC721.mint{value: 0.1 ether}(address(this));
-
-        // Prepare the data payload for validation
-        bytes memory data = abi.encode(address(this), abi.encode(tokenId));
-
-        // Try to claim the incentive with insufficient funds
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                BoostError.InsufficientFunds.selector, 0x0000000000000000000000000000000000000000, 0, 75000000000000
-            )
-        );
-        boostCore.claimIncentive{value: 0}(0, 0, address(0), "");
     }
 
     function testClaimIncentive_Unauthorized() public {
@@ -372,36 +378,6 @@ contract BoostCoreTest is Test {
         vm.stopPrank();
     }
 
-    function testClaimIncentive_WithReferrer() public {
-        // Create a Boost first
-        boostCore.createBoost(validCreateCalldata);
-
-        // Mint an ERC721 token to the claimant (this contract)
-        uint256 tokenId = 1;
-        mockERC721.mint{value: 0.1 ether}(address(this));
-        mockERC721.mint{value: 0.1 ether}(address(this));
-        mockERC721.mint{value: 0.1 ether}(address(this));
-
-        // Define a referrer
-        address referrer = makeAddr("referrer");
-        vm.deal(referrer, 1 ether); // Fund the referrer for testing purposes
-
-        // Prepare the data payload for validation
-        bytes memory data = abi.encode(address(this), abi.encode(tokenId));
-
-        // Claim the incentive with a referrer
-        boostCore.claimIncentive{value: 0.000075 ether}(0, 0, referrer, data);
-
-        // Check the claims
-        BoostLib.Boost memory boost = boostCore.getBoost(0);
-        ERC20Incentive _incentive = ERC20Incentive(address(boost.incentives[0]));
-        assertEq(_incentive.claims(), 1);
-
-        // Check that the claim fee was routed to the referrer
-        uint256 expectedReferrerBalance = 1 ether + (0.000075 ether * 2000 / 10000);
-        assertEq(referrer.balance, expectedReferrerBalance);
-    }
-
     ///////////////////////////
     // BoostCore.getBoost //
     ///////////////////////////
@@ -415,14 +391,13 @@ contract BoostCoreTest is Test {
 
         // Check the Boost details
         assertEq(boost.owner, address(1));
-        assertEq(boost.protocolFee, boostCore.protocolFee() + 500);
-        assertEq(boost.referralFee, boostCore.referralFee() + 1000);
+        assertEq(boost.protocolFee, boostCore.protocolFee());
         assertEq(boost.maxParticipants, 10_000);
     }
 
-    ///////////////////////////
+    /////////////////////////////
     // BoostCore.getBoostCount //
-    ///////////////////////////
+    /////////////////////////////
 
     function testGetBoostCount() public {
         // Initially, there should be no Boosts
@@ -435,6 +410,155 @@ contract BoostCoreTest is Test {
         assertEq(boostCore.getBoostCount(), 1);
     }
 
+    ////////////////////////
+    // BoostCore.clawback //
+    ////////////////////////
+    function testFuzz_SingleClawbackPrecision(uint256 multiple) public {
+        // Assume clawbackAmount is between 1 wei and 1 ether for the sake of precision testing
+        vm.assume(multiple > 0 && multiple <= 100);
+        uint256 clawbackAmount = multiple * 1 ether;
+
+        // Setup: Create a Boost first with the valid calldata
+        boostCore.createBoost(validCreateCalldata);
+        BoostLib.Boost memory boost = boostCore.getBoost(0);
+        uint256 boostId = 0;
+        uint256 incentiveId = 0;
+
+        // Ensure the initial balance is sufficient for the clawback
+        uint256 initialBalanceIncentive = mockERC20.balanceOf(address(boost.incentives[incentiveId]));
+        require(initialBalanceIncentive >= clawbackAmount, "Insufficient initial balance for clawback test");
+
+        // Call clawback
+        budget.clawbackFromTarget(address(boostCore), abi.encode(clawbackAmount), boostId, incentiveId);
+
+        // Get the protocol fee that should have been deducted
+        uint256 protocolFeeAmount = (clawbackAmount * boostCore.protocolFee()) / boostCore.FEE_DENOMINATOR();
+
+        uint256 finalBalanceIncentive = mockERC20.balanceOf(address(boost.incentives[incentiveId]));
+
+        // Assert the remaining balance matches the expected remaining balance
+        assertEq(
+            finalBalanceIncentive,
+            initialBalanceIncentive - clawbackAmount,
+            "Balance after clawback does not match expected"
+        );
+
+        // Validate that the protocol fee was sent to the protocolFeeReceiver
+        uint256 budgetBalance = mockERC20.balanceOf(address(boost.budget));
+        assertEq(
+            budgetBalance, protocolFeeAmount + clawbackAmount, "Protocol fee receiver did not receive correct amount"
+        );
+    }
+
+    function testFuzz_MultipleClawbacks(uint256[] memory multiples) public {
+        vm.assume(multiples.length > 0 && multiples.length <= 10); // Assume the array has between 1 and 10 entries
+
+        // Total clawback amount we'll use to ensure the BoostCore has enough balance
+        uint256 totalClawbackAmount = 0;
+
+        multiples[0] = bound(multiples[0], 1, 100);
+        multiples[0] = multiples[0] * 1 ether;
+        totalClawbackAmount += multiples[0];
+
+        // Calculate total clawback amount based on multiples
+        uint256 i = 1;
+        for (i = 1; (i < multiples.length && totalClawbackAmount < 100 ether); i++) {
+            // Assume each multiple is within a valid range to avoid too large values
+            multiples[i] = bound(multiples[i], 1, 100 - (totalClawbackAmount / 1 ether));
+            multiples[i] = multiples[i] * 1 ether;
+            totalClawbackAmount += multiples[i];
+        }
+
+        // Setup: Create a Boost first with the valid calldata
+        boostCore.createBoost(validCreateCalldata);
+        BoostLib.Boost memory boost = boostCore.getBoost(0);
+        uint256 boostId = 0;
+        uint256 incentiveId = 0;
+
+        // Mint the required ERC20 balance and approve it for the BoostCore contract
+        mockERC20.mint(address(boost.incentives[incentiveId]), totalClawbackAmount);
+        mockERC20.approve(address(boostCore), totalClawbackAmount);
+
+        // Ensure the initial balance is sufficient for the total clawback amount
+        uint256 initialBalanceIncentive = mockERC20.balanceOf(address(boost.incentives[incentiveId]));
+        require(initialBalanceIncentive >= totalClawbackAmount, "Insufficient initial balance for clawback test");
+
+        // Initialize cumulative protocol fee tracker and cumulative recipient tracker
+        uint256 cumulativeProtocolFee = 0;
+
+        // Execute multiple clawbacks
+        uint256 clawbackCount = i;
+        for (i = 0; i < clawbackCount; i++) {
+            // Call clawback
+            budget.clawbackFromTarget(address(boostCore), abi.encode(multiples[i]), boostId, incentiveId);
+
+            // Calculate the protocol fee for this clawback
+            uint256 protocolFeeAmount = (multiples[i] * boostCore.protocolFee()) / boostCore.FEE_DENOMINATOR();
+            cumulativeProtocolFee += protocolFeeAmount;
+        }
+
+        // Calculate the final balances
+        uint256 finalBalanceIncentive = mockERC20.balanceOf(address(boost.incentives[incentiveId]));
+
+        // Assert the final balances are as expected
+        assertEq(
+            finalBalanceIncentive,
+            initialBalanceIncentive - totalClawbackAmount,
+            "Balance after multiple clawbacks does not match expected"
+        );
+
+        // Validate that the total protocol fee was sent to the protocolFeeReceiver
+        uint256 budgetBalance = mockERC20.balanceOf(address(boost.budget));
+        assertEq(
+            budgetBalance,
+            cumulativeProtocolFee + totalClawbackAmount,
+            "Budget did not receive correct cumulative amount"
+        );
+    }
+
+    function testClawbackWithZeroAmount() public {
+        address recipient = makeAddr("recipient");
+
+        // Setup: Create a Boost first with the valid calldata
+        boostCore.createBoost(validCreateCalldata);
+        BoostLib.Boost memory boost = boostCore.getBoost(0);
+        uint256 boostId = 0;
+        uint256 incentiveId = 0;
+
+        // Mint some tokens to ensure there is balance in the incentive
+        mockERC20.mint(address(boost.incentives[incentiveId]), 100 ether);
+        mockERC20.approve(address(boostCore), 100 ether);
+
+        // Get initial balances
+        uint256 initialBalanceIncentive = mockERC20.balanceOf(address(boost.incentives[incentiveId]));
+        uint256 initialBalanceRecipient = mockERC20.balanceOf(recipient);
+        uint256 initialProtocolReceiverBalance = mockERC20.balanceOf(boostCore.protocolFeeReceiver());
+
+        // Prepare the clawback payload with zero amount
+        //bytes memory clawbackData = abi.encode(AIncentive.ClawbackPayload({target: recipient, data: abi.encode(0)}));
+
+        // Call clawback
+        AIncentive.ClawbackPayload memory expectedPayload =
+            AIncentive.ClawbackPayload({target: address(budget), data: abi.encode(0)});
+        vm.expectRevert(
+            abi.encodeWithSelector(BoostError.ClawbackFailed.selector, address(budget), abi.encode(expectedPayload))
+        );
+        budget.clawbackFromTarget(address(boostCore), abi.encode(0), boostId, incentiveId);
+
+        // Assert that no balances have changed
+        uint256 finalBalanceIncentive = mockERC20.balanceOf(address(boost.incentives[incentiveId]));
+        uint256 finalBalanceRecipient = mockERC20.balanceOf(recipient);
+        uint256 finalProtocolReceiverBalance = mockERC20.balanceOf(boostCore.protocolFeeReceiver());
+
+        assertEq(finalBalanceIncentive, initialBalanceIncentive, "Incentive balance should remain unchanged");
+        assertEq(finalBalanceRecipient, initialBalanceRecipient, "Recipient balance should remain unchanged");
+        assertEq(
+            finalProtocolReceiverBalance,
+            initialProtocolReceiverBalance,
+            "Protocol fee receiver balance should remain unchanged"
+        );
+    }
+
     ///////////////////////////
     // BoostCore.setProtocolFeeReceiver //
     ///////////////////////////
@@ -443,16 +567,6 @@ contract BoostCoreTest is Test {
         address newReceiver = address(2);
         boostCore.setProtocolFeeReceiver(newReceiver);
         assertEq(boostCore.protocolFeeReceiver(), newReceiver);
-    }
-
-    ///////////////////////////
-    // BoostCore.setClaimFee //
-    ///////////////////////////
-
-    function testSetClaimFee() public {
-        uint256 newClaimFee = 0.0001 ether;
-        boostCore.setClaimFee(newClaimFee);
-        assertEq(boostCore.claimFee(), newClaimFee);
     }
 
     //////////////////////////////
@@ -465,24 +579,30 @@ contract BoostCoreTest is Test {
         assertEq(boostCore.protocolFee(), newProtocolFee);
     }
 
-    //////////////////////////////
-    // BoostCore.setReferralFee //
-    //////////////////////////////
-
-    function testSetReferralFee() public {
-        uint64 newReferralFee = 1500; // 15%
-        boostCore.setReferralFee(newReferralFee);
-        assertEq(boostCore.referralFee(), newReferralFee);
-    }
-
     ///////////////////////////
     // Test Helper Functions //
     ///////////////////////////
 
-    function _makeAction(address target, bytes4 selector, uint256 value) internal returns (BoostLib.Target memory) {
+    function _makeERC721MintAction(address target, bytes4 selector, uint256 value)
+        internal
+        returns (BoostLib.Target memory)
+    {
         return BoostLib.Target({
             isBase: true,
             instance: address(new ERC721MintAction()),
+            parameters: abi.encode(
+                AContractAction.InitPayload({chainId: block.chainid, target: target, selector: selector, value: value})
+            )
+        });
+    }
+
+    function _makeContractAction(address target, bytes4 selector, uint256 value)
+        internal
+        returns (BoostLib.Target memory)
+    {
+        return BoostLib.Target({
+            isBase: true,
+            instance: address(new ContractAction()),
             parameters: abi.encode(
                 AContractAction.InitPayload({chainId: block.chainid, target: target, selector: selector, value: value})
             )
@@ -499,9 +619,14 @@ contract BoostCoreTest is Test {
         });
     }
 
-    function _makeBudget(address owner_, address[] memory authorized_) internal returns (ABudget _budget) {
-        _budget = ABudget(payable(address(new SimpleBudget()).clone()));
-        _budget.initialize(abi.encode(SimpleBudget.InitPayload({owner: owner_, authorized: authorized_})));
+    function _makeBudget(address owner_, address[] memory authorized_, uint256[] memory roles_)
+        internal
+        returns (ABudget _budget)
+    {
+        _budget = ABudget(payable(address(new ManagedBudget()).clone()));
+        _budget.initialize(
+            abi.encode(ManagedBudget.InitPayload({owner: owner_, authorized: authorized_, roles: roles_}))
+        );
     }
 
     function _makeIncentives(uint256 count) internal returns (BoostLib.Target[] memory) {
@@ -515,7 +640,8 @@ contract BoostCoreTest is Test {
                         asset: address(mockERC20),
                         strategy: AERC20Incentive.Strategy.POOL,
                         reward: 1 ether,
-                        limit: 100
+                        limit: 100,
+                        manager: address(this)
                     })
                 )
             });

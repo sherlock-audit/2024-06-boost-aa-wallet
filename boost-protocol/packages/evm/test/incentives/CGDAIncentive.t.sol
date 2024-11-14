@@ -12,13 +12,13 @@ import {AIncentive} from "contracts/incentives/AIncentive.sol";
 import {CGDAIncentive} from "contracts/incentives/CGDAIncentive.sol";
 
 import {ABudget} from "contracts/budgets/ABudget.sol";
-import {SimpleBudget} from "contracts/budgets/SimpleBudget.sol";
+import {ManagedBudget} from "contracts/budgets/ManagedBudget.sol";
 
 contract CGDAIncentiveTest is Test {
     using SafeTransferLib for address;
 
     MockERC20 public asset = new MockERC20();
-    SimpleBudget public budget;
+    ManagedBudget public budget;
     CGDAIncentive public incentive;
 
     function setUp() public {
@@ -145,6 +145,16 @@ contract CGDAIncentiveTest is Test {
         assertEq(asset.balanceOf(address(incentive)), 0 ether);
     }
 
+    function test_no_duplicate_claim() public {
+        assertEq(incentive.currentReward(), 1 ether);
+        address claimer = makeAddr("zach zebra's zootopia");
+
+        incentive.claim(claimer, hex"");
+
+        vm.expectRevert(abi.encodeWithSelector(BoostError.ClaimFailed.selector, claimer, hex""));
+        incentive.claim(claimer, hex"");
+    }
+
     function test_claim_OutOfBudget() public {
         incentive.clawback(
             abi.encode(
@@ -158,7 +168,11 @@ contract CGDAIncentiveTest is Test {
         assertEq(incentive.currentReward(), 0 ether);
         assertEq(asset.balanceOf(address(incentive)), 0 ether);
 
-        vm.expectRevert(AIncentive.NotClaimable.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                BoostError.ClaimFailed.selector, makeAddr("sam's soggy sandwich & soup shack"), hex""
+            )
+        );
         incentive.claim(makeAddr("sam's soggy sandwich & soup shack"), hex"");
 
         assertEq(incentive.currentReward(), 0 ether);

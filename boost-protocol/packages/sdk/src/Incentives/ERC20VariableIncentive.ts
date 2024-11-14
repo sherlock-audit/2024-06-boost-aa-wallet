@@ -15,25 +15,61 @@ import {
   writeErc20VariableIncentiveClawback,
 } from '@boostxyz/evm';
 import { bytecode } from '@boostxyz/evm/artifacts/contracts/incentives/ERC20VariableIncentive.sol/ERC20VariableIncentive.json';
-import type { Address, ContractEventName, Hex } from 'viem';
+import {
+  type Abi,
+  type Address,
+  type ContractEventName,
+  type Hex,
+  encodeAbiParameters,
+} from 'viem';
+import { ERC20VariableIncentive as ERC20VariableIncentiveBases } from '../../dist/deployments.json';
 import type {
   DeployableOptions,
   GenericDeployableParams,
 } from '../Deployable/Deployable';
 import { DeployableTarget } from '../Deployable/DeployableTarget';
+import { type ClaimPayload, prepareClaimPayload } from '../claiming';
 import {
-  type ClaimPayload,
-  type ERC20VariableIncentivePayload,
   type GenericLog,
   type ReadParams,
   RegistryType,
   type WriteParams,
-  prepareClaimPayload,
-  prepareERC20VariableIncentivePayload,
 } from '../utils';
 
 export { erc20VariableIncentiveAbi };
-export type { ERC20VariableIncentivePayload };
+/**
+ * The object representation of a `ERC20VariableIncentivePayload.InitPayload`
+ *
+ * @export
+ * @interface ERC20VariableIncentivePayload
+ * @typedef {ERC20VariableIncentivePayload}
+ */
+export interface ERC20VariableIncentivePayload {
+  /**
+   * The address of the incentivized asset.
+   *
+   * @type {Address}
+   */
+  asset: Address;
+  /**
+   * The amount of the asset to distribute.
+   *
+   * @type {bigint}
+   */
+  reward: bigint;
+  /**
+   * The total spending limit of the asset that will be distributed.
+   *
+   * @type {bigint}
+   */
+  limit: bigint;
+  /**
+   * The entity that can `clawback` funds
+   *
+   * @type {Address}
+   */
+  manager: Address;
+}
 
 /**
  * A generic `viem.Log` event with support for `ERC20VariableIncentive` event types.
@@ -51,27 +87,32 @@ export type ERC20VariableIncentiveLog<
 > = GenericLog<typeof erc20VariableIncentiveAbi, event>;
 
 /**
- * A simple ERC20 incentive implementation that allows claiming of tokens
+ * A modified ERC20 incentive implementation that allows claiming of variable token amounts with a spending limit
  *
  * @export
  * @class ERC20VariableIncentive
  * @typedef {ERC20VariableIncentive}
- * @extends {DeployableTarget<ERC20VariableIncentivePayload>}
+ * @template [Payload=ERC20VariableIncentivePayload | undefined]
+ * @template {Abi} [ABI=typeof erc20VariableIncentiveAbi]
+ * @extends {DeployableTarget<ERC20VariableIncentivePayload, ABI>}
  */
-export class ERC20VariableIncentive extends DeployableTarget<
-  ERC20VariableIncentivePayload,
-  typeof erc20VariableIncentiveAbi
-> {
+export class ERC20VariableIncentive<
+  Payload = ERC20VariableIncentivePayload | undefined,
+  ABI extends Abi = typeof erc20VariableIncentiveAbi,
+> extends DeployableTarget<Payload, ABI> {
+  //@ts-expect-error it is instantiated correctly
   public override readonly abi = erc20VariableIncentiveAbi;
   /**
    * @inheritdoc
    *
    * @public
    * @static
-   * @type {Address}
+   * @type {Record<number, Address>}
    */
-  public static override base: Address = import.meta.env
-    .VITE_ERC20_VARIABLE_INCENTIVE_BASE;
+  public static override bases: Record<number, Address> = {
+    31337: import.meta.env.VITE_ERC20_VARIABLE_INCENTIVE_BASE,
+    ...(ERC20VariableIncentiveBases as Record<number, Address>),
+  };
   /**
    * @inheritdoc
    *
@@ -86,13 +127,13 @@ export class ERC20VariableIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'owner'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<Address>}
    */
   public async owner(
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'owner'>,
   ) {
-    return readErc20VariableIncentiveOwner(this._config, {
+    return await readErc20VariableIncentiveOwner(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -101,17 +142,17 @@ export class ERC20VariableIncentive extends DeployableTarget<
   }
 
   /**
-   * The current reward
+   * The total amount of rewards claimed
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'currentReward'>} [params]
-   * @returns {Promise<bigint>} - The current reward
+   * @param {?ReadParams} [params]
+   * @returns {Promise<bigint>}
    */
   public async totalClaimed(
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'totalClaimed'>,
   ) {
-    return readErc20VariableIncentiveTotalClaimed(this._config, {
+    return await readErc20VariableIncentiveTotalClaimed(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -124,13 +165,13 @@ export class ERC20VariableIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'currentReward'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>} - The current reward
    */
   public async currentReward(
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'currentReward'>,
   ) {
-    return readErc20VariableIncentiveCurrentReward(this._config, {
+    return await readErc20VariableIncentiveCurrentReward(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -143,13 +184,13 @@ export class ERC20VariableIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'claims'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async claims(
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'claims'>,
   ) {
-    return readErc20VariableIncentiveClaims(this._config, {
+    return await readErc20VariableIncentiveClaims(this._config, {
       address: this.assertValidAddress(),
       args: [],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -163,14 +204,14 @@ export class ERC20VariableIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {Address} address
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'claimed'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<boolean>}
    */
   public async claimed(
     address: Address,
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'claimed'>,
   ) {
-    return readErc20VariableIncentiveClaimed(this._config, {
+    return await readErc20VariableIncentiveClaimed(this._config, {
       address: this.assertValidAddress(),
       args: [address],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
@@ -183,13 +224,13 @@ export class ERC20VariableIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'asset'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<Address>}
    */
   public async asset(
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'asset'>,
   ) {
-    return readErc20VariableIncentiveAsset(this._config, {
+    return await readErc20VariableIncentiveAsset(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -201,13 +242,13 @@ export class ERC20VariableIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'reward'>} [params]
+   * @param {?ReadParams} [params]
    * @returns {Promise<bigint>}
    */
   public async reward(
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'reward'>,
   ) {
-    return readErc20VariableIncentiveReward(this._config, {
+    return await readErc20VariableIncentiveReward(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -219,13 +260,13 @@ export class ERC20VariableIncentive extends DeployableTarget<
    *
    * @public
    * @async
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'limit'>} [params]
-   * @returns {unknown}
+   * @param {?ReadParams} [params]
+   * @returns {Promise<bigint>}
    */
   public async limit(
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'limit'>,
   ) {
-    return readErc20VariableIncentiveLimit(this._config, {
+    return await readErc20VariableIncentiveLimit(this._config, {
       address: this.assertValidAddress(),
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
@@ -238,14 +279,14 @@ export class ERC20VariableIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof erc20VariableIncentiveAbi, 'claim'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} - Returns true if successfully claimed
    */
-  public async claim(
+  protected async claim(
     payload: ClaimPayload,
     params?: WriteParams<typeof erc20VariableIncentiveAbi, 'claim'>,
   ) {
-    return this.awaitResult(this.claimRaw(payload, params));
+    return await this.awaitResult(this.claimRaw(payload, params));
   }
 
   /**
@@ -254,10 +295,10 @@ export class ERC20VariableIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof erc20VariableIncentiveAbi, 'claim'>} [params]
-   * @returns {Promise<boolean>} - Returns true if successfully claimed
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} - Returns true if successfully claimed
    */
-  public async claimRaw(
+  protected async claimRaw(
     payload: ClaimPayload,
     params?: WriteParams<typeof erc20VariableIncentiveAbi, 'claim'>,
   ) {
@@ -281,14 +322,14 @@ export class ERC20VariableIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof erc20VariableIncentiveAbi, 'clawback'>} [params]
+   * @param {?WriteParams} [params]
    * @returns {Promise<boolean>} -  True if the assets were successfully clawbacked
    */
   public async clawback(
     payload: ClaimPayload,
     params?: WriteParams<typeof erc20VariableIncentiveAbi, 'clawback'>,
   ) {
-    return this.awaitResult(this.clawbackRaw(payload, params));
+    return await this.awaitResult(this.clawbackRaw(payload, params));
   }
 
   /**
@@ -297,8 +338,8 @@ export class ERC20VariableIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?WriteParams<typeof erc20VariableIncentiveAbi, 'clawback'>} [params]
-   * @returns {Promise<boolean>} -  True if the assets were successfully clawbacked
+   * @param {?WriteParams} [params]
+   * @returns {Promise<{ hash: `0x${string}`; result: boolean; }>} -  True if the assets were successfully clawbacked
    */
   public async clawbackRaw(
     payload: ClaimPayload,
@@ -327,19 +368,34 @@ export class ERC20VariableIncentive extends DeployableTarget<
    * @public
    * @async
    * @param {ClaimPayload} payload
-   * @param {?ReadParams<typeof erc20VariableIncentiveAbi, 'isClaimable'>} [params]
-   * @returns {unknown} = True if the incentive is claimable based on the data payload
+   * @param {?ReadParams} [params]
+   * @returns {Promise<boolean>} = True if the incentive is claimable based on the data payload
    */
   public async isClaimable(
     payload: ClaimPayload,
     params?: ReadParams<typeof erc20VariableIncentiveAbi, 'isClaimable'>,
   ) {
-    return readErc20VariableIncentiveIsClaimable(this._config, {
+    return await readErc20VariableIncentiveIsClaimable(this._config, {
       address: this.assertValidAddress(),
       args: [prepareClaimPayload(payload)],
       // biome-ignore lint/suspicious/noExplicitAny: Accept any shape of valid wagmi/viem parameters, wagmi does the same thing internally
       ...(params as any),
     });
+  }
+
+  /**
+   * Builds the claim data for the ERC20VariableIncentive.
+   *
+   * @public
+   * @param {bigint} rewardAmount
+   * @returns {Hex} Returns the encoded claim data
+   * @description This function returns the encoded claim data for the ERC20VariableIncentive.
+   */
+  public buildClaimData(rewardAmount: bigint) {
+    return encodeAbiParameters(
+      [{ type: 'uint256', name: 'rewardAmount' }],
+      [rewardAmount],
+    );
   }
 
   /**
@@ -351,7 +407,7 @@ export class ERC20VariableIncentive extends DeployableTarget<
    * @returns {GenericDeployableParams}
    */
   public override buildParameters(
-    _payload?: ERC20VariableIncentivePayload,
+    _payload?: Payload,
     _options?: DeployableOptions,
   ): GenericDeployableParams {
     const [payload, options] = this.validateDeploymentConfig(
@@ -361,8 +417,36 @@ export class ERC20VariableIncentive extends DeployableTarget<
     return {
       abi: erc20VariableIncentiveAbi,
       bytecode: bytecode as Hex,
-      args: [prepareERC20VariableIncentivePayload(payload)],
+      args: [
+        prepareERC20VariableIncentivePayload(
+          payload as ERC20VariableIncentivePayload,
+        ),
+      ],
       ...this.optionallyAttachAccount(options.account),
     };
   }
+}
+
+/**
+ * Given a {@link ERC20VariableIncentivePayload}, properly encode a ` ERC20VariableIncentive.InitPayload` for use with {@link ERC20VariableIncentive} initialization.
+ *
+ * @param {ERC20VariableIncentivePayload} param0
+ * @param {Address} param0.asset - The address of the incentivized asset.
+ * @param {bigint} param0.reward - The amount of the asset to distribute.
+ * @param {bigint} param0.limit - How many times can this incentive be claimed.
+ * @returns {Hex}
+ */
+export function prepareERC20VariableIncentivePayload({
+  asset,
+  reward,
+  limit,
+}: ERC20VariableIncentivePayload) {
+  return encodeAbiParameters(
+    [
+      { type: 'address', name: 'asset' },
+      { type: 'uint256', name: 'reward' },
+      { type: 'uint256', name: 'limit' },
+    ],
+    [asset, reward, limit],
+  );
 }
